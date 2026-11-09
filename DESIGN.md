@@ -12,6 +12,12 @@ source:
     - .firecrawl/css/ # the page's stylesheets, source of every token below
     - .firecrawl/terms-dialog.png # second capture, 2026-11-10: the terms dialog before the first message
     - .firecrawl/terms-dialog.html # that dialog's markup
+    - .firecrawl/login-dialog.png # third capture, 2026-11-10: the sign-in dialog shown after agreeing
+    - .firecrawl/login-dialog.html # that dialog's markup
+    - .firecrawl/chat-conversation.png # user's screenshot, 2026-11-10: a signed-in Battle conversation, dark theme
+    - .firecrawl/arena-sidebar-open.png # the open sidebar, 2026-11-10
+    - .firecrawl/arena-mode-menu.png # the composer's mode menu, open, 2026-11-10
+    - .firecrawl/brand-menu.png # user's screenshot of the signed-in brand menu
 colors:
   light:
     canvas: "#FCFAF8" # --surface-primary, page and sidebar
@@ -242,9 +248,23 @@ Small radii everywhere except the composer, which is the one soft, large shape o
 
 ### Sidebar rail
 
-- **Build:** shadcn `Sidebar` with `collapsible="icon"` (HTML, `data-sidebar` attributes).
-- **Items:** 32px tall with a 6px radius and 8px padding. Icons are 20px, labels 16px and hidden when collapsed. Hover and active fill is `surface-tint`.
-- **Edge:** a 1px hairline on the right.
+Measured on Arena with the sidebar open and closed (Firecrawl, 2026-11-10, `.firecrawl/arena-sidebar-open.png`):
+
+- **Build:** shadcn `Sidebar` with `collapsible="icon"` (HTML, `data-sidebar` attributes). Open, it's 240px wide on the canvas fill with a hairline right edge.
+- **Collapsed items:** 32px squares with a 6px radius and 8px padding, 20px icons and no labels.
+- **Open items:** 26px tall, 4px padding, 6px radius and an 8px gap. Icons are 18px and labels are 14px at the 450 book weight in `ink-tertiary`. Hover and active fill is `sidebar-accent` (`surface-tint`).
+- **Open header:** 16px padding (12px at the bottom). The wordmark (about 18px tall) sits on the left and a "Collapse sidebar" button on the right: 26px with 4px padding and a 6px radius, an 18px icon in `ink`, and `surface-tint` on hover. Collapsed, only the toggle shows.
+- **Brand menu:** when signed in, the wordmark gains a chevron and opens a menu (from the user's screenshot, `.firecrawl/brand-menu.png`; signed-out pages don't have it, so it couldn't be inspected).
+  - **Panel:** about 200px wide, dropping from the wordmark. In dark mode it's near-black `#0A0A0A` with `#404040` dividers and border. Those aren't palette tokens, so use the theme's popover color.
+  - **Rows:** a 16px icon in a dimmer ink (about `ink-tertiary`) and a 14px label in `ink`, grouped by dividers.
+  - **Chevron:** points up while the menu is open.
+  - **Theme row:** a segmented control on `surface-floating`, with `surface-raised` for the active option.
+- **Dropdown menus elsewhere:** the composer's mode menu, inspected live.
+  - **Panel:** a `surface-secondary` fill (white in light mode), a `border-faint` hairline, a 6px radius, `shadow-md`, no padding and 300px wide.
+  - **Rows:** full width with no radius, 14px medium text, and `surface-highlight` on hover and focus. The checked option is in `ink-tertiary`.
+- **In this app:** `components/app-sidebar.tsx` and `components/sidebar-brand-menu.tsx`.
+  - **Header:** "AI Team" in the display serif (24px, 300) with a chevron that turns 180° while open, plus the collapse toggle. Collapsed, only the toggle shows.
+  - **Menu:** a shadcn `DropdownMenu`, 208px wide, on the theme's popover color, with "Create a new bot" (opens `BotDialog`) and "Create a group chat" (does nothing yet).
 
 ### Buttons
 
@@ -272,6 +292,20 @@ Measured on the terms dialog Arena shows before the first message (`.firecrawl/t
   - **Left:** a hint in 12px `ink-tertiary`: "Or hit **Enter** on your keyboard to agree", with "Enter" in `ink-secondary` medium after a return-arrow icon.
   - **Right:** the main button.
 - **Main button:** `interactive-cta` fill (`#252522`) with `on-cta` text, 16px by 8px padding, 14px **normal** weight and a **4px** radius. Hover is `#3E3A37`, pressed `#413D39`. It's full width on mobile.
+
+### Sign-in dialog
+
+Shown after "Agree" when a signed-out visitor sends a message (`.firecrawl/login-dialog.png`, HTML classes and computed styles). It's a compact, centered variant of the Dialog above:
+
+- **Panel:** 420px wide, the same canvas fill, hairline border, 8px radius and `shadow-lg`, but tighter padding (12px by 16px). Everything is centered under a small column-logo mark.
+- **Title:** "Log In or Create Account", a 24px serif (`text-2xl`, normal weight, so the 300 face) in `ink-strong`, centered, 4px above the description.
+- **Description:** 14px `ink-secondary`, centered.
+- **Google button:** full width, 4px radius, `px-4 py-3`, 14px normal weight. It has a `border-faint` hairline on the canvas fill with `interactive-active` text, a white fill on hover and `ink-tertiary` text while pressed.
+- **Divider:** "OR" in 12px `ink-tertiary`, centered, with no lines.
+- **Email field:** 40px tall (`h-10`), 6px radius (`rounded-md`), `border` hairline, transparent fill, 12px side padding, 14px text on desktop and the 32% placeholder ink. Focus shows a 2px blue ring offset 2px against the canvas.
+- **Main button:** full width, `header-primary` fill (`#252523`) with inverted text, 90% on hover, the same 4px radius and `px-4 py-3`.
+- **Checkboxes:** 16px, 2px radius, `border-faint` border; checked fills with `surface-highlight` (`#F0EBE5`) and an `interactive-active` tick. Labels are 12px.
+- **Fine print:** 12px `ink-tertiary`, and centered for the legal line, whose links are `interactive-link` blue.
 
 ## Motion
 
@@ -319,15 +353,75 @@ These come from the class names in the HTML; only the desktop layout was capture
 
 ## Chat conversation
 
-**The conversation screen was not captured.** On 2026-11-10 one prompt was typed and sent in an anonymous Firecrawl browser, and Arena stopped at a **Terms of Use & Privacy Policy** dialog that needs "Agree" (or Enter) before the message is sent. That would accept Arena's terms, so it wasn't clicked. Two publicly posted share links (`/c/<id>`) both redirected signed-out visitors to the home page.
+Documented from the user's screenshot of a signed-in Arena conversation in Battle mode, dark theme, 1920×1080, on 2026-11-10 (`.firecrawl/chat-conversation.png`). The screenshot includes the user's own browser: the top 40px (address bar) and the left 48px column of app icons are the browser, not Arena. Arena's rail starts at x≈50.
 
-What was seen on the way:
+How the values were taken:
 
-- **Mode menu** (the "Battle" select): Battle Mode, Agent Mode, Side by Side and Direct, each a title over a one-line description. A second select reads "Modality: Auto".
+- **Colors:** sampled from the pixels. Every one matched an Arena dark token exactly (distance 0), except the card label (9 units from `ink-secondary`).
+- **Sizes:** estimates from the screenshot, not CSS.
+
+**Getting here took an account.** An anonymous Firecrawl session reached the terms dialog and then the sign-in dialog (both under Components), and the prompt was never sent. Signing in through Firecrawl's live view didn't work, so the user supplied this screenshot.
+
+### Layout
+
+- **Rail:** the same 49px icon rail as the home page. Signed in, the user's round avatar (about 24px) sits near the bottom, above the docs icon.
+- **Chat title:** top left, "What is a haiku?" with a small chevron that opens a menu. It's 14px `ink-secondary` (`#E7E1DA`), with no header bar and no divider beneath it.
+- **Thread column:** about 790px wide, centered in the content area. This matches the `max-w-[800px]` class seen in the home page HTML. User messages align to its right edge, and the composer is docked at its bottom.
+- **Battle answers:** they break out of the column into two equal cards (about 612px each) with a 16px gap, about 1240px together, centered.
+
+### User message
+
+- **Position:** right-aligned with no avatar or name.
+- **Bubble:** `surface-raised` fill (`#413C3A` in dark), `ink` text (`#F4F0EB`) at 16px, about 12px by 8px padding and a 6–8px radius.
+- **Width:** it shrinks to fit short messages.
+
+### Answer card (Battle)
+
+- **Card:** the canvas fill (`#252523`, the same as the page, so it reads as an outline), a `hairline` border (`#413D39`) and an 8px radius.
+- **Header row:** about 40px tall with a `hairline` divider below it.
+  - **Left:** the label "Assistant A" or "Assistant B", in the **mono** face at about 12px in `ink-secondary`. The models stay anonymous until a vote.
+  - **Right:** three 16px icon buttons: regenerate, copy and expand.
+- **Body:** Markdown at 16/24 in `ink`, with about 12px of side padding.
+  - **Inline:** bold and italic.
+  - **Headings:** sans semibold at about 20px.
+  - **Blockquotes:** italic, with a roughly 3px left rule and a 16px indent.
+  - **Rules and lists:** horizontal rules are a `hairline`; bullet lists have about 8px between items.
+
+### Vote bar
+
+- **Tray:** sits directly on top of the composer, about 680px wide and centered. It has a `surface-tint` fill (`#1B1A19`), a `hairline` border and about 8px of padding.
+- **Buttons:** "← A is better", "⇄ Both are good", "⊘ Both are bad" and "B is better →".
+  - **Style:** each has a `#292624` fill (the dark `secondary` color, the same as this app's `--secondary`), a hairline border, a 4px radius, about 36px height and a 14px `ink` label with a leading or trailing icon.
+  - **Width:** the two outer buttons are wider than the two inner ones.
+
+### Docked composer
+
+- **Box:** the home composer moved to the bottom of the thread column, about 790px wide. It has a `surface` fill (`#2C2B28`) and a `hairline` border.
+- **Placeholder:** "Ask followup…". It measures `#6C6A67`, exactly `ink` at 32% over the fill, which confirms the placeholder rule.
+- **Footer row:**
+  - **Left:** a "+" button, the mode select ("Battle") and a modality select that now reads "Text" (it read "Modality: Auto" on the home page).
+  - **Right:** the 32px outlined send button.
+
+### Seen before the first message
+
+- **Mode menu** (the "Battle" select): Battle Mode, Agent Mode, Side by Side and Direct, each a title over a one-line description.
 - **Privacy notice:** after a send attempt, a notice appears below the composer. It says conversations may be shared with AI providers and published, and not to submit personal or sensitive information.
-- **Terms gate:** the first send opens the terms dialog above. Enter agrees.
+- **Two gates:**
+  - **Terms:** the first send opens the terms dialog; Enter agrees.
+  - **Sign-in:** after that, a signed-out send opens the sign-in dialog. The typed prompt stays in the composer.
 
-Still unknown: the message list, user and model message styling, model labels in Battle mode, the voting controls, streaming and loading states, and how the composer docks once a conversation starts.
+### Applying it to this app (proposed)
+
+- **Thread:** build it from the installed shadcn chat parts, not hand-rolled markup.
+  - **Scrolling:** `MessageScroller` (with `MessageScrollerItem` per message) for the scroll and follow behavior.
+  - **Rows:** `Message` for each row.
+  - **User surface:** `Bubble` for the user's message, using the `surface-raised` / `ink` recipe above.
+  - **Notes:** `Marker` for system notes.
+  - **Tool activity:** `Trace` for a bot's tool calls.
+- **Direct chats (one bot):** a single answer column in the ~800px thread. Label each bot answer with the bot's `ChatAvatar` and its name in the mono face, in place of "Assistant A".
+- **Group chats (several bots):** the Battle cards. Show one outlined card per bot side by side, breaking out of the thread column, each with the avatar, the mono name and the regenerate, copy and expand actions in its header.
+- **Docked composer:** the home composer recipe pinned under the thread, with the tray slot above it available for suggested replies. This app has no votes.
+- **Chat title:** the chat's name, or the bot's name for direct chats (`chats.name` is null there), top left with a menu chevron.
 
 ## Implementation in this repo
 
@@ -360,12 +454,12 @@ This app uses shadcn **base-nova** with Geist. Nova fits: 32px controls, 6–8px
 - **Suggestion cards:** `Item`-style buttons with `text-2xs` subtitles.
 - **Banner.**
 
-Build them from the existing components when the chat screen arrives. "Chat conversation" lists what is known about that screen so far.
+Build them from the existing components when the chat screen arrives; "Chat conversation" documents that screen.
 
 ## Known Gaps
 
-- **Captured so far:** the signed-out home page at 1920×1080 in light mode, plus the terms dialog. The chat thread, side-by-side battle view, leaderboard tables, menus, toasts, mobile layout and dark mode were **not seen**. The dark colors come from the CSS only.
-- **The message thread is undocumented** (bubbles, model labels, voting controls). Seeing it requires accepting Arena's terms; see "Chat conversation".
+- **Captured so far:** the signed-out home page at 1920×1080 in light mode, the terms and sign-in dialogs, and one signed-in Battle conversation in dark mode (the user's screenshot). Leaderboard tables, menus, toasts, the mobile layout and the conversation in light mode were **not seen**.
+- **The conversation comes from one static screenshot.** Its sizes are estimates, and nothing about streaming, loading, hover actions, the state after voting (model names revealed), Direct mode or the mobile thread was seen.
 - **Text-size setting:** the reader setting (`[data-lb-text-size]`, see Typography) was found in the CSS, but where it's switched on wasn't seen.
 - **Hover and pressed states** were read from class names, not observed.
 - **Wordmark:** the logo is an image of their own wordmark; its font wasn't checked.
