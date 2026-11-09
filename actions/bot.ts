@@ -44,6 +44,7 @@ export async function createBot(input: BotInsert) {
     return bot
   })
 
-  revalidatePath("/")
+  // The new chat shows in the sidebar, which lives in the root layout.
+  revalidatePath("/", "layout")
   return bot
 }

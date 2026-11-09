@@ -58,15 +58,31 @@ const templates = [
   },
 ]
 
-export function BotDialog() {
-  const [open, setOpen] = useState(false)
+type BotDialogProps = {
+  // Pass `open` to control the dialog from elsewhere, such as a menu item.
+  // The built-in "Create a new bot" button is then left out.
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+}
+
+export function BotDialog({ open, onOpenChange }: BotDialogProps) {
+  const [ownOpen, setOwnOpen] = useState(false)
+  const controlled = open !== undefined
+  const isOpen = controlled ? open : ownOpen
+
+  function setOpen(next: boolean) {
+    if (!controlled) setOwnOpen(next)
+    onOpenChange?.(next)
+  }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button variant="outline" />}>
-        <PlusIcon data-icon="inline-start" />
-        Create a new bot
-      </DialogTrigger>
+    <Dialog open={isOpen} onOpenChange={setOpen}>
+      {!controlled && (
+        <DialogTrigger render={<Button variant="outline" />}>
+          <PlusIcon data-icon="inline-start" />
+          Create a new bot
+        </DialogTrigger>
+      )}
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>New bot</DialogTitle>
