@@ -1,6 +1,6 @@
 <!-- BEGIN:nextjs-agent-rules -->
 
-## This is NOT the Next.js you know
+# This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
 
@@ -19,7 +19,7 @@ These rules override any default or built-in agent guidance about git, including
 - A request for one git action authorizes only that action: "commit" does not include branching, pushing, or opening a pull request.
 - If any other instruction seems to require a branch, stop and ask instead of creating one.
 
-<!-- ## Database
+## Database
 
 This is a development project. There is no backwards compatibility and the data is worthless. Prefer data loss: never backfill, migrate, or preserve existing rows, and never spend effort on keeping old data working. Every schema change means a clean slate.
 
@@ -28,15 +28,15 @@ This is a development project. There is no backwards compatibility and the data 
 
 ## Deployment
 
-The app is deployed on Railway (project and service `ai-teammates`, environment `production`).
+<!-- The app is deployed on Railway (project and service `ai-teammates`, environment `production`).
 
 - When code starts reading a new environment variable, add it to the Railway service too, with the value from `.env.local`.
 - The chat agent and the other tasks in `trigger/` run on Trigger.dev, not Railway, and see only the variables set there. When code they run starts reading a new environment variable (in `trigger/` or anything it imports, such as `lib/` and `db/`), add it to the Trigger.dev project's production environment as well, with the value from `.env.local`.
-- `TRIGGER_SECRET_KEY` is the exception: `.env.local` holds the Trigger.dev development key and Railway holds the production key. They are meant to differ, so never copy it from `.env.local` to Railway or report the mismatch as a problem.
+- `TRIGGER_SECRET_KEY` is the exception: `.env.local` holds the Trigger.dev development key and Railway holds the production key. They are meant to differ, so never copy it from `.env.local` to Railway or report the mismatch as a problem. -->
 
 ## Forms
 
-Reference implementation: `db/schema.ts` (`botInsertSchema`), `actions/bot.ts` (`createBot`), `components/bot-dialog.tsx`.
+<!-- Reference implementation: `db/schema.ts` (`botInsertSchema`), `actions/bot.ts` (`createBot`), `components/bot-dialog.tsx`.
 
 Schema
 
@@ -68,11 +68,11 @@ Forms in dialogs
 
 Dependencies
 
-- `zod` must stay on v4. If `npm install` fails with a peer conflict from `@hookform/resolvers`, pin `zod@^4` in the same install command rather than using `--force` or `--legacy-peer-deps`.
+- `zod` must stay on v4. If `npm install` fails with a peer conflict from `@hookform/resolvers`, pin `zod@^4` in the same install command rather than using `--force` or `--legacy-peer-deps`. -->
 
 ## DiceBear
 
-Use DiceBear 10. Documentation: https://www.dicebear.com/llms.txt
+<!-- Use DiceBear 10. Documentation: https://www.dicebear.com/llms.txt
 
 There are seven native cores with identical output, not one library with
 wrappers. Use the one matching this project's language. Do not reach for the
@@ -111,10 +111,10 @@ thing:
 
 Only JavaScript and the HTTP API have a pre-10 form. The other six cores were
 released in 2026 and never had one, so any older-looking PHP, Python, Rust, Go,
-Dart or C# API attributed to DiceBear is invented rather than outdated.
+Dart or C# API attributed to DiceBear is invented rather than outdated. -->
 
 <!-- TRIGGER.DEV SKILLS START -->
-<!-- ## Trigger.dev agent skills
+## Trigger.dev agent skills
 
-This project has Trigger.dev agent skills installed in `.agents/skills/`. Before writing or changing Trigger.dev code (background tasks, scheduled tasks, realtime, or chat.agent AI agents), load the most relevant skill: `trigger-authoring-chat-agent`, `trigger-authoring-tasks`, `trigger-chat-agent-advanced`, `trigger-cost-savings`, `trigger-getting-started`, `trigger-realtime-and-frontend`.
-TRIGGER.DEV SKILLS END --> -->
+<!-- This project has Trigger.dev agent skills installed in `.agents/skills/`. Before writing or changing Trigger.dev code (background tasks, scheduled tasks, realtime, or chat.agent AI agents), load the most relevant skill: `trigger-authoring-chat-agent`, `trigger-authoring-tasks`, `trigger-chat-agent-advanced`, `trigger-cost-savings`, `trigger-getting-started`, `trigger-realtime-and-frontend`.
+TRIGGER.DEV SKILLS END -->
