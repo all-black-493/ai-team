@@ -30,14 +30,15 @@ export function AppSidebar() {
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
-        {/* Open: brand menu on the left, toggle on the right. Collapsed: toggle only. */}
-        <div className="flex items-center">
-          <SidebarMenu className="group-data-[collapsible=icon]:hidden">
+        {/* Open: brand menu left, toggle right. Collapsed: toggle above the brand icon. */}
+        <div className="flex items-center group-data-[collapsible=icon]:flex-col-reverse group-data-[collapsible=icon]:gap-2">
+          <SidebarMenu>
             <SidebarMenuItem>
               <SidebarBrandMenu />
             </SidebarMenuItem>
           </SidebarMenu>
-          <SidebarTrigger />
+          {/* size-8, like every SidebarMenuButton in the collapsed rail. */}
+          <SidebarTrigger size="icon" />
         </div>
         <Suspense fallback={<SidebarSearch chats={[]} />}>
           <ChatSearch />
@@ -81,7 +82,14 @@ export function AppSidebar() {
             </Show>
             <Show when="signed-in">
               <SidebarMenuItem>
-                <UserButton />
+                {/* 32px, the size of every other button in the rail. */}
+                <UserButton
+                  appearance={{
+                    elements: {
+                      userButtonAvatarBox: { width: "2rem", height: "2rem" },
+                    },
+                  }}
+                />
               </SidebarMenuItem>
             </Show>
           </Suspense>
@@ -99,20 +107,23 @@ async function ChatSearch() {
   return <SidebarSearch chats={chats} />
 }
 
-// The signed-in user's chats. Hidden in the collapsed rail and when there are
-// no chats (or nobody is signed in).
+// The signed-in user's chats. In the collapsed rail each shows as its bot's
+// avatar (the lg button shrinks to size-8 with no padding) with the title as a
+// tooltip. Hidden when there are no chats or nobody is signed in.
 async function ChatGroup() {
   const chats = await getUserChats()
   if (chats.length === 0) return null
 
   return (
-    <SidebarGroup className="group-data-[collapsible=icon]:hidden">
+    <SidebarGroup>
       <SidebarGroupLabel>Chats</SidebarGroupLabel>
-      <SidebarMenu>
+      {/* Collapsed, space the avatars 24px apart. */}
+      <SidebarMenu className="group-data-[collapsible=icon]:gap-6">
         {chats.map((chat) => (
           <SidebarMenuItem key={chat.id}>
             <SidebarMenuButton
               size="lg"
+              tooltip={chat.title}
               render={<Link href={`/chats/${chat.id}`} />}
             >
               <ChatAvatar
@@ -123,9 +134,11 @@ async function ChatGroup() {
               <div className="grid flex-1 text-left text-sm leading-tight">
                 {/* Room on the right for the widest time badge ("10 minutes"). */}
                 <span className="truncate pr-20">{chat.title}</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  {chat.lastMessagePreview ?? "No messages yet"}
-                </span>
+                {chat.lastMessagePreview && (
+                  <span className="truncate text-xs text-muted-foreground">
+                    {chat.lastMessagePreview}
+                  </span>
+                )}
               </div>
             </SidebarMenuButton>
             <SidebarMenuBadge>
@@ -140,7 +153,7 @@ async function ChatGroup() {
 
 function ChatGroupSkeleton() {
   return (
-    <SidebarGroup className="group-data-[collapsible=icon]:hidden">
+    <SidebarGroup>
       <SidebarGroupLabel>Chats</SidebarGroupLabel>
       <SidebarMenu>
         {Array.from({ length: 3 }, (_, i) => (

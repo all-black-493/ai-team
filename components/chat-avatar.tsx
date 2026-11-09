@@ -25,8 +25,15 @@ export function ChatAvatar({
       ...(animated && { tags: ["animation"] }),
     }).toDataUri()
 
+    // shrink-0: a face never squeezes in a flex row (e.g. the collapsed rail).
     return (
-      <Image src={src} alt="" width={32} height={32} className={className} />
+      <Image
+        src={src}
+        alt=""
+        width={32}
+        height={32}
+        className={cn("shrink-0", className)}
+      />
     )
   }
 
@@ -42,7 +49,7 @@ export function ChatAvatar({
   }).toDataUri()
 
   return (
-    <span className="group/avatar inline-grid">
+    <span className="group/avatar inline-grid shrink-0">
       <Image
         src={still}
         alt=""

@@ -124,9 +124,11 @@ export function SidebarSearch({ chats }: { chats: UserChat[] }) {
                   />
                   <div className="grid min-w-0 flex-1 leading-tight">
                     <span className="truncate">{chat.title}</span>
-                    <span className="truncate text-xs text-muted-foreground">
-                      {chat.lastMessagePreview ?? "No messages yet"}
-                    </span>
+                    {chat.lastMessagePreview && (
+                      <span className="truncate text-xs text-muted-foreground">
+                        {chat.lastMessagePreview}
+                      </span>
+                    )}
                   </div>
                   <span className="text-xs text-muted-foreground">
                     {formatDistanceToNowStrict(chat.lastMessageAt)}
