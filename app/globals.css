@@ -6,8 +6,25 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+    /* Titles stay in the sans; the serif is only for display type (DESIGN.md). */
     --font-heading: var(--font-sans);
     --font-sans: var(--font-sans);
+    --font-display: var(--font-display);
+    --font-weight-book: 450;
+    /* DESIGN.md type scale. text-xs..text-lg already match Arena's body sizes. */
+    --text-2xs: 0.625rem;
+    --text-2xs--line-height: 0.75rem;
+    --text-heading: 1.5rem;
+    --text-heading--line-height: 2rem;
+    --text-heading--letter-spacing: -0.025em;
+    --text-heading--font-weight: 300;
+    --text-display: 3rem;
+    --text-display--line-height: 1;
+    --text-display--letter-spacing: -0.025em;
+    --text-display--font-weight: 300;
+    --color-border-medium: var(--border-medium);
+    --color-highlight: var(--highlight);
+    --color-highlight-foreground: var(--highlight-foreground);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -48,73 +65,80 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* Colors from DESIGN.md (warm neutrals, near-black primary, blue focus). */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
+    --background: #fcfaf8; /* canvas */
+    --foreground: #2e2b29; /* ink */
+    --card: #ffffff; /* surface */
+    --card-foreground: #252523; /* ink-strong */
+    --popover: #f4f0eb; /* surface-tint */
+    --popover-foreground: #2e2b29;
+    --primary: #252522;
+    --primary-foreground: #fcfaf8;
+    --secondary: #ffffff;
+    --secondary-foreground: #2e2b29;
+    --muted: #e4dfd7; /* surface-raised-alt */
+    --muted-foreground: #67625b; /* ink-tertiary: Arena's ink-muted fails AA */
+    --accent: #e9e4dc; /* secondary-hover: stays visible on the tinted popover */
+    --accent-foreground: #413d39; /* ink-secondary */
+    --destructive: #d44540;
+    --border: #eeedec; /* hairline */
+    --border-medium: #e1dedb; /* cards, outline buttons */
+    --highlight: #f4c406; /* the headline marker, once per screen */
+    --highlight-foreground: #252523;
+    --input: #d8d4d0; /* border-strong, so form fields read on the tint */
+    --ring: #268be3; /* focus */
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    --radius: 0.5rem; /* 8px cards, ~6px controls */
+    --sidebar: #fcfaf8;
+    --sidebar-foreground: #2e2b29;
+    --sidebar-primary: #252522;
+    --sidebar-primary-foreground: #fcfaf8;
+    --sidebar-accent: #f4f0eb;
+    --sidebar-accent-foreground: #2e2b29;
+    --sidebar-border: #eeedec;
+    --sidebar-ring: #268be3;
 }
 
 .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
+    --background: #252523;
+    --foreground: #f4f0eb;
+    --card: #2c2b28;
+    --card-foreground: #ffffff;
+    --popover: #1b1a19;
+    --popover-foreground: #f4f0eb;
+    --primary: #fafafa;
+    --primary-foreground: #252523;
+    --secondary: #292624;
+    --secondary-foreground: #f4f0eb;
+    --muted: #413c3a;
+    --muted-foreground: #9c9891; /* neutral-7: Arena's ink-muted fails AA */
+    --accent: #403d3a;
+    --accent-foreground: #e7e1da;
+    --destructive: #f25550;
+    --border: #413d39;
+    --border-medium: #524d47;
+    --highlight: #41be4b; /* the marker turns green in dark mode */
+    --highlight-foreground: #252523;
+    --input: #5f5a54;
+    --ring: #299bff;
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --sidebar: #252523;
+    --sidebar-foreground: #f4f0eb;
+    --sidebar-primary: #fafafa;
+    --sidebar-primary-foreground: #252523;
+    --sidebar-accent: #1b1a19;
+    --sidebar-accent-foreground: #f4f0eb;
+    --sidebar-border: #413d39;
+    --sidebar-ring: #299bff;
 }
 
 @layer base {
@@ -127,4 +151,15 @@
   html {
     @apply font-sans;
     }
+  /* DESIGN.md iconography: thin 1.5px outline icons. */
+  .lucide {
+    stroke-width: 1.5;
+  }
+  /* DESIGN.md motion: entrance and exit animations only when motion is OK. */
+  @media (prefers-reduced-motion: reduce) {
+    [class*="animate-in"],
+    [class*="animate-out"] {
+      animation: none !important;
+    }
+  }
 }

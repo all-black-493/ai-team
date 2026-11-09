@@ -1,10 +1,16 @@
+import { cookies } from "next/headers"
 import { ClerkProvider } from "@clerk/nextjs"
 import { shadcn } from "@clerk/ui/themes"
-import { Geist, Geist_Mono } from "next/font/google"
+import { Geist, Geist_Mono, Newsreader } from "next/font/google"
 
 import "./globals.css"
-import { SiteHeader } from "@/components/site-header"
+import { AppSidebar } from "@/components/app-sidebar"
 import { ThemeProvider } from "@/components/theme-provider"
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar"
 import { Toaster } from "@/components/ui/toast"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
@@ -16,11 +22,22 @@ const fontMono = Geist_Mono({
   variable: "--font-mono",
 })
 
-export default function RootLayout({
+// Display serif from DESIGN.md (stands in for Arena's Martina Plantijn Light).
+const fontDisplay = Newsreader({
+  subsets: ["latin"],
+  weight: "300",
+  style: ["normal", "italic"],
+  variable: "--font-display",
+})
+
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  // The rail starts collapsed, like Arena's, then remembers the user's choice.
+  const sidebarOpen = (await cookies()).get("sidebar_state")?.value === "true"
+
   return (
     <html
       lang="en"
@@ -29,15 +46,31 @@ export default function RootLayout({
         "antialiased",
         fontMono.variable,
         "font-sans",
-        geist.variable
+        geist.variable,
+        fontDisplay.variable
       )}
     >
       <body className="flex min-h-svh flex-col">
         <ClerkProvider appearance={{ theme: shadcn }}>
           <ThemeProvider>
             <TooltipProvider>
-              <SiteHeader />
-              <main className="flex flex-1 flex-col">{children}</main>
+              <SidebarProvider
+                defaultOpen={sidebarOpen}
+                style={
+                  {
+                    "--sidebar-width": "15rem",
+                    "--sidebar-width-icon": "calc(3rem + 1px)",
+                  } as React.CSSProperties
+                }
+              >
+                <AppSidebar />
+                <SidebarInset>
+                  <header className="flex h-12 shrink-0 items-center border-b px-2 md:hidden">
+                    <SidebarTrigger />
+                  </header>
+                  {children}
+                </SidebarInset>
+              </SidebarProvider>
             </TooltipProvider>
             <Toaster />
           </ThemeProvider>
