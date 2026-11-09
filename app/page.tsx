@@ -1,19 +1,43 @@
-import { Button } from "@/components/ui/button"
+import { auth } from "@clerk/nextjs/server"
+import { nanoid } from "nanoid"
 
-export default function Page() {
+import { BotDialog } from "@/components/bot-dialog"
+import { ChatAvatar } from "@/components/chat-avatar"
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+} from "@/components/ui/empty"
+
+export default async function Page() {
+  await auth.protect()
+
+  // The page renders per request, so every refresh gets a new face.
+  const seed = nanoid()
+
   return (
-    <div className="flex flex-1 p-6">
-      <div className="flex max-w-md min-w-0 flex-col gap-4 text-sm leading-loose">
-        <div>
-          <h1 className="font-medium">Project ready!</h1>
-          <p>You may now add components and start building.</p>
-          <p>We&apos;ve already added the button component for you.</p>
-          <Button className="mt-2">Button</Button>
-        </div>
-        <div className="font-mono text-xs text-muted-foreground">
-          (Press <kbd>d</kbd> to toggle dark mode)
-        </div>
-      </div>
-    </div>
+    <Empty>
+      <EmptyHeader className="max-w-md">
+        <EmptyMedia>
+          <ChatAvatar seed={seed} animated="hover" className="rounded-full" />
+        </EmptyMedia>
+        {/* DESIGN.md hero: light serif in tertiary ink, one word marked. */}
+        <h1 className="font-display text-display text-muted-foreground">
+          Meet your first{" "}
+          <mark className="inline-block bg-highlight px-2 leading-none text-highlight-foreground italic">
+            bot
+          </mark>
+        </h1>
+        <EmptyDescription>
+          Every bot gets its own personality, memory, and face. Spin one up and
+          start the conversation.
+        </EmptyDescription>
+      </EmptyHeader>
+      <EmptyContent>
+        <BotDialog />
+      </EmptyContent>
+    </Empty>
   )
 }
