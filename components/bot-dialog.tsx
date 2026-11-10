@@ -1,13 +1,26 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { PlusIcon, ShuffleIcon } from "lucide-react"
+import { PlusIcon, ShuffleIcon, Trash2Icon } from "lucide-react"
 import { nanoid } from "nanoid"
 import { Controller, useForm } from "react-hook-form"
 
-import { createBot } from "@/actions/bot"
+import { createBot, deleteBot, updateBot } from "@/actions/bot"
 import { ChatAvatar } from "@/components/chat-avatar"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -32,7 +45,7 @@ import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import { Textarea } from "@/components/ui/textarea"
 import { toast } from "@/components/ui/toast"
-import { botInsertSchema, type BotInsert } from "@/db/schema"
+import { botInsertSchema, type Bot, type BotInsert } from "@/db/schema"
 
 // One click fills in the job and how to go about it.
 const templates = [
@@ -58,14 +71,26 @@ const templates = [
   },
 ]
 
+// What the edit dialog reads and writes.
+type EditableBot = Pick<Bot, "id" | "name" | "avatar" | "job" | "instructions">
+
 type BotDialogProps = {
+  // Pass a bot to edit it; leave it out to create a new one.
+  bot?: EditableBot
+  // What opens the dialog. Defaults to a "Create a new bot" button.
+  trigger?: React.ReactElement
   // Pass `open` to control the dialog from elsewhere, such as a menu item.
-  // The built-in "Create a new bot" button is then left out.
+  // No trigger is rendered then.
   open?: boolean
   onOpenChange?: (open: boolean) => void
 }
 
-export function BotDialog({ open, onOpenChange }: BotDialogProps) {
+export function BotDialog({
+  bot,
+  trigger,
+  open,
+  onOpenChange,
+}: BotDialogProps) {
   const [ownOpen, setOwnOpen] = useState(false)
   const controlled = open !== undefined
   const isOpen = controlled ? open : ownOpen
@@ -77,50 +102,66 @@ export function BotDialog({ open, onOpenChange }: BotDialogProps) {
 
   return (
     <Dialog open={isOpen} onOpenChange={setOpen}>
-      {!controlled && (
-        <DialogTrigger render={<Button variant="outline" />}>
-          <PlusIcon data-icon="inline-start" />
-          Create a new bot
-        </DialogTrigger>
-      )}
+      {!controlled &&
+        (trigger ? (
+          <DialogTrigger render={trigger} />
+        ) : (
+          <DialogTrigger render={<Button variant="outline" />}>
+            <PlusIcon data-icon="inline-start" />
+            Create a new bot
+          </DialogTrigger>
+        ))}
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>New bot</DialogTitle>
+          <DialogTitle>{bot ? "Edit bot" : "New bot"}</DialogTitle>
           <DialogDescription>
-            Give it a face, a name, and a job to do.
+            {bot
+              ? "Change its face, its name, or the job it does."
+              : "Give it a face, a name, and a job to do."}
           </DialogDescription>
         </DialogHeader>
-        <BotForm onCreated={() => setOpen(false)} />
+        <BotForm bot={bot} onSaved={() => setOpen(false)} />
       </DialogContent>
     </Dialog>
   )
 }
 
-function BotForm({ onCreated }: { onCreated: () => void }) {
-  const [initialAvatar] = useState(() => nanoid())
+function BotForm({ bot, onSaved }: { bot?: EditableBot; onSaved: () => void }) {
+  const [initialAvatar] = useState(() => bot?.avatar ?? nanoid())
 
+  // The dialog unmounts its content when closed, so every open starts
+  // from the bot as it is now.
   const form = useForm({
     resolver: zodResolver(botInsertSchema),
     defaultValues: {
-      name: "",
+      name: bot?.name ?? "",
       avatar: initialAvatar,
-      job: "",
-      instructions: "",
+      job: bot?.job ?? "",
+      instructions: bot?.instructions ?? "",
     },
   })
 
   async function onSubmit(values: BotInsert) {
     try {
-      const bot = await createBot(values)
-      toast.add({
-        title: "Bot created",
-        description: `${bot.name} is ready to work.`,
-        type: "success",
-      })
-      onCreated()
+      if (bot) {
+        const saved = await updateBot(bot.id, values)
+        toast.add({
+          title: "Changes saved",
+          description: `${saved.name} is up to date.`,
+          type: "success",
+        })
+      } else {
+        const created = await createBot(values)
+        toast.add({
+          title: "Bot created",
+          description: `${created.name} is ready to work.`,
+          type: "success",
+        })
+      }
+      onSaved()
     } catch {
       toast.add({
-        title: "Couldn't create the bot",
+        title: bot ? "Couldn't save the changes" : "Couldn't create the bot",
         description: "Something went wrong. Please try again.",
         type: "error",
       })
@@ -140,23 +181,27 @@ function BotForm({ onCreated }: { onCreated: () => void }) {
       onSubmit={form.handleSubmit(onSubmit)}
       className="flex flex-col gap-4"
     >
-      <div
-        role="group"
-        aria-label="Start from a template"
-        className="flex flex-wrap gap-2"
-      >
-        {templates.map((template) => (
-          <Button
-            key={template.job}
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => applyTemplate(template)}
-          >
-            {template.job}
-          </Button>
-        ))}
-      </div>
+      {/* Templates are a starting point; on an existing bot they'd only
+          overwrite its job and instructions. */}
+      {!bot && (
+        <div
+          role="group"
+          aria-label="Start from a template"
+          className="flex flex-wrap gap-2"
+        >
+          {templates.map((template) => (
+            <Button
+              key={template.job}
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => applyTemplate(template)}
+            >
+              {template.job}
+            </Button>
+          ))}
+        </div>
+      )}
       <FieldGroup>
         <Controller
           name="avatar"
@@ -246,14 +291,81 @@ function BotForm({ onCreated }: { onCreated: () => void }) {
         />
       </FieldGroup>
       <DialogFooter>
+        {bot && <DeleteBotButton bot={bot} />}
         <DialogClose render={<Button type="button" variant="outline" />}>
           Cancel
         </DialogClose>
         <Button type="submit" disabled={isSubmitting}>
           {isSubmitting && <Spinner data-icon="inline-start" />}
-          Create bot
+          {bot ? "Save changes" : "Create bot"}
         </Button>
       </DialogFooter>
     </form>
+  )
+}
+
+// Deleting can't be undone and takes the bot's chat with it, so it asks
+// first. The confirmation stays open, with its buttons disabled, until the
+// delete finishes.
+function DeleteBotButton({ bot }: { bot: EditableBot }) {
+  const router = useRouter()
+  const [isDeleting, startTransition] = useTransition()
+
+  function handleDelete() {
+    startTransition(async () => {
+      try {
+        await deleteBot(bot.id)
+      } catch {
+        toast.add({
+          title: "Couldn't delete the bot",
+          description: "Something went wrong. Please try again.",
+          type: "error",
+        })
+        return
+      }
+      toast.add({
+        title: "Bot deleted",
+        description: `${bot.name} and its chat are gone.`,
+        type: "success",
+      })
+      // The chat this was opened from no longer exists. Inside the same
+      // transition, so the deleted chat's page never shows in between.
+      router.replace("/")
+    })
+  }
+
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger
+        render={
+          <Button type="button" variant="destructive" className="sm:mr-auto" />
+        }
+      >
+        <Trash2Icon data-icon="inline-start" />
+        Delete
+      </AlertDialogTrigger>
+      <AlertDialogContent size="sm">
+        <AlertDialogHeader>
+          <AlertDialogMedia className="bg-destructive/10 text-destructive dark:bg-destructive/20 dark:text-destructive">
+            <Trash2Icon />
+          </AlertDialogMedia>
+          <AlertDialogTitle>Delete {bot.name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Your chat with {bot.name} goes too. This can&apos;t be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            disabled={isDeleting}
+            onClick={handleDelete}
+          >
+            {isDeleting && <Spinner data-icon="inline-start" />}
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
