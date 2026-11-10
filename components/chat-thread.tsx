@@ -2,19 +2,26 @@
 
 import "katex/dist/katex.min.css"
 
-import { useRef, useState } from "react"
+import { useEffect, useEffectEvent, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useChat } from "@ai-sdk/react"
 import type { TriggerChatTransport } from "@trigger.dev/sdk/chat"
 import {
   useLoadTranscript,
+  useSubAgentMessages,
   useTriggerChatTransport,
 } from "@trigger.dev/sdk/chat/react"
 import { upload } from "@vercel/blob/client"
-import { readUIMessageStream, type FileUIPart, type UIMessage } from "ai"
-import { FileIcon, FlagIcon, ReplyIcon, XIcon } from "lucide-react"
+import {
+  readUIMessageStream,
+  type FileUIPart,
+  type UIMessage,
+  type UIMessageChunk,
+} from "ai"
+import { FileIcon, FlagIcon, PlaneIcon, ReplyIcon, XIcon } from "lucide-react"
 
 import { setBotModel } from "@/actions/bot"
+import { setAutopilot } from "@/actions/group"
 import {
   loadChatTranscript,
   mintChatAccessToken,
@@ -32,7 +39,11 @@ import {
 import { Message, MessageContent } from "@/components/ai-elements/message"
 import { Shimmer } from "@/components/ai-elements/shimmer"
 import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion"
-import { AssistantParts, hasVisibleParts } from "@/components/chat-activity"
+import {
+  AssistantParts,
+  ChatActivityProvider,
+  hasVisibleParts,
+} from "@/components/chat-activity"
 import { ChatAvatar } from "@/components/chat-avatar"
 import { ChatComposer, type ComposerMessage } from "@/components/chat-composer"
 import { ChatHeader } from "@/components/chat-header"
@@ -57,6 +68,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { InputGroupButton } from "@/components/ui/input-group"
 import { toast } from "@/components/ui/toast"
+import { Toggle } from "@/components/ui/toggle"
 import {
   attachmentPrefix,
   MAX_ATTACHMENT_BYTES,
@@ -69,6 +81,7 @@ import type { MessageRating } from "@/db/schema"
 import type { UserBot } from "@/queries/bot"
 import {
   FLAG_STATUS_LABELS,
+  MAX_AUTOPILOT_TURNS,
   MODERATION_ACTIONS,
   type RoleKind,
 } from "@/lib/governance"
@@ -113,8 +126,22 @@ function textOf(message: UIMessage) {
 }
 
 // The most turns the chat runs on its own in a row, such as a flag's
-// response and review: a guard against bots handing a message round.
+// response and review: a guard against bots handing a message round. On
+// autopilot, it's MAX_AUTOPILOT_TURNS.
 const MAX_AUTOMATIC_TURNS = 4
+
+// Passes a turn's stream through, handing the work of bots it sets going
+// (data-subagent chunks) to `onData` on the way, as useChat does for its own.
+function forwardWork(onData: (part: { type: string; data?: unknown }) => void) {
+  return new TransformStream<UIMessageChunk, UIMessageChunk>({
+    transform(chunk, controller) {
+      if (chunk.type.startsWith("data-")) {
+        onData(chunk as { type: string; data?: unknown })
+      }
+      controller.enqueue(chunk)
+    },
+  })
+}
 
 // Where a message is in the page, for a reply to jump back to it.
 const anchorOf = (messageId: string) => `message-${messageId}`
@@ -132,8 +159,8 @@ const suggestions = {
   ],
   group: [
     "Who in this group does what?",
-    "What can you help me with?",
-    "Show me your screen",
+    "Split up a plan for my week between you",
+    "Vote on the best name for my side project",
   ],
 }
 
@@ -207,6 +234,9 @@ function ChatMessages({
   const group = chat.kind === "group"
   const members: ThreadBot[] = chat.members
   const router = useRouter()
+  // The live answers of bots at work in a consult or delegate call, from
+  // the chunks forwarded inside the calling bot's answer.
+  const subAgents = useSubAgentMessages<BotUIMessage>()
   const {
     messages,
     setMessages,
@@ -219,14 +249,21 @@ function ChatMessages({
     id: chatId,
     messages: initialMessages,
     transport,
+    onData: subAgents.onData,
     // An answer that leaves another bot's turn due, such as a handoff or a
-    // flag, is followed at once by that turn. Only answers that finish here:
-    // a stopped or broken one doesn't carry on.
+    // flag, is followed at once by that turn, and on autopilot every answer
+    // is followed by the next. Only answers that finish here: a stopped or
+    // broken one doesn't carry on.
     onFinish: ({ message, isAbort, isDisconnect, isError }) => {
       // A bot changed the group: load it again, for the header, the badges,
       // the bot picker and the sidebar.
       if (changedGroup(message)) router.refresh()
-      if (needsFollowUp(message) && !isAbort && !isDisconnect && !isError) {
+      if (
+        (needsFollowUp(message) || autopilotRef.current) &&
+        !isAbort &&
+        !isDisconnect &&
+        !isError
+      ) {
         void carryOn(message.id, handoffOf(message)?.botId)
       }
     },
@@ -241,6 +278,20 @@ function ChatMessages({
   } | null>(null)
   const [autoFailed, setAutoFailed] = useState(false)
   const busy = answering || auto !== null
+
+  // On autopilot, the group's bots carry on after every answer, a bot the
+  // agent's director picks at a time, until it picks nobody (`idle`) or
+  // they've run MAX_AUTOPILOT_TURNS in a row (`limit`). The ref is what the
+  // running loop reads, so switching off stops it after the turn in hand.
+  const [autopilot, setAutopilotOn] = useState(overview?.autopilot ?? false)
+  const autopilotRef = useRef(autopilot)
+  const [autopilotStop, setAutopilotStop] = useState<"idle" | "limit" | null>(
+    null
+  )
+  // A message the user sent while turns ran on their own: it goes once the
+  // turn in hand ends.
+  const queuedRef = useRef<(() => void) | null>(null)
+  const [queued, setQueued] = useState<string | null>(null)
 
   const last = messages.at(-1)
   // The answer coming in, once it has started: an automatic turn's is the
@@ -433,11 +484,13 @@ function ChatMessages({
 
   // Runs the turns the chat runs on its own, one after another, until none
   // is due: a handoff's answer, a flagged bot's response, a moderator's
-  // review. Each is asked of the agent as an action, which runs whichever
-  // turn is due. Sent through useChat, its answer would be folded into the
-  // message before it, as if that bot carried on, so the stream is read here
-  // and the answer added as a message of its own. `botId`, when known, is
-  // the first turn's bot.
+  // review, and on autopilot, the next bot's turn. Each is asked of the
+  // agent as an action, which runs whichever turn is due. Sent through
+  // useChat, its answer would be folded into the message before it, as if
+  // that bot carried on, so the stream is read here and the answer added as
+  // a message of its own; forwarded work of bots it sets to work goes to
+  // subAgents on the way. `botId`, when known, is the first turn's bot. A
+  // message the user sent meanwhile goes once the loop ends.
   async function carryOn(fromId: string | undefined, botId?: string) {
     const controller = new AbortController()
     setAskedBotId(botId && membersById.has(botId) ? botId : null)
@@ -445,8 +498,17 @@ function ChatMessages({
     if (botId && membersById.has(botId)) setBotId(botId)
     setAuto({ fromId, controller })
     setAutoFailed(false)
+    setAutopilotStop(null)
+    let stopped: "idle" | "limit" | null = null
     try {
-      for (let turn = 0; turn < MAX_AUTOMATIC_TURNS; turn++) {
+      for (let turn = 0; ; turn++) {
+        if (
+          turn >=
+          (autopilotRef.current ? MAX_AUTOPILOT_TURNS : MAX_AUTOMATIC_TURNS)
+        ) {
+          if (autopilotRef.current) stopped = "limit"
+          break
+        }
         const stream = await transport.sendAction(
           chatId,
           { type: "continue" },
@@ -454,7 +516,7 @@ function ChatMessages({
         )
         let answered: BotUIMessage | undefined
         for await (const answer of readUIMessageStream<BotUIMessage>({
-          stream,
+          stream: stream.pipeThrough(forwardWork(subAgents.onData)),
           terminateOnError: true,
         })) {
           answered = answer
@@ -468,26 +530,79 @@ function ChatMessages({
               : current.with(index, answer)
           })
         }
-        // No turn was due.
-        if (!answered) break
+        // No turn was due, and on autopilot, nobody needs to speak.
+        if (!answered) {
+          if (autopilotRef.current) stopped = "idle"
+          break
+        }
         const answer = answered
         setAuto((current) => current && { ...current, fromId: answer.id })
         setAskedBotId(null)
-        if (!needsFollowUp(answer)) break
+        if (changedGroup(answer)) router.refresh()
+        if (queuedRef.current) break
+        if (!needsFollowUp(answer) && !autopilotRef.current) break
       }
     } catch {
       if (!controller.signal.aborted) setAutoFailed(true)
     } finally {
       setAuto(null)
+      setAutopilotStop(stopped)
       // Flags, roles or standing may have changed along the way.
       router.refresh()
+      const next = queuedRef.current
+      queuedRef.current = null
+      setQueued(null)
+      next?.()
     }
+  }
+
+  // Switches autopilot, saved before the bots start, as the agent reads it.
+  // On, they start at once unless a turn is running: it carries on after.
+  async function switchAutopilot(on: boolean) {
+    autopilotRef.current = on
+    setAutopilotOn(on)
+    setAutopilotStop(null)
+    try {
+      await setAutopilot(chatId, on)
+    } catch {
+      autopilotRef.current = !on
+      setAutopilotOn(!on)
+      toast.add({
+        title: on
+          ? "Couldn't turn on autopilot"
+          : "Couldn't turn off autopilot",
+        type: "error",
+      })
+      return
+    }
+    if (on && !busy) void carryOn(messages.at(-1)?.id)
+  }
+
+  // A group left on autopilot picks up where it was when the chat opens.
+  // Once: in development, effects run twice on mount.
+  const resumed = useRef(false)
+  const resumeAutopilot = useEffectEvent(() => {
+    if (resumed.current) return
+    resumed.current = true
+    if (group && autopilotRef.current && !busy) {
+      void carryOn(messages.at(-1)?.id)
+    }
+  })
+  useEffect(() => {
+    resumeAutopilot()
+  }, [])
+
+  // While turns run on their own, a message waits for the one in hand.
+  function queue(message: ComposerMessage) {
+    queuedRef.current = () => void send(message)
+    setQueued(message.text || "Your attachments")
   }
 
   // useChat's stop only ends the local stream; the agent needs telling too,
   // or it keeps going after a reload. An automatic turn stops with its
-  // stream.
+  // stream. Stopping also takes the group off autopilot.
   function stopAnswer() {
+    if (autopilotRef.current) void switchAutopilot(false)
     if (auto) {
       auto.controller.abort()
     } else {
@@ -536,165 +651,198 @@ function ChatMessages({
           )
         }
       />
-      <Conversation className="min-h-0">
-        <ConversationContent className="mx-auto w-full max-w-[800px] gap-6 px-4 py-6">
-          {messages.length === 0 && !busy && (
-            <EmptyChat
-              title={chat.title}
-              description={
-                group
-                  ? "Pick who answers below. A bot can hand your message to another."
-                  : (chat.bot?.job ?? "")
-              }
-              face={
-                group ? (
-                  <GroupChatAvatar members={members} className="size-12" />
-                ) : (
-                  <ChatAvatar
-                    seed={members[0]?.avatar ?? chatId}
-                    className="size-12 rounded-lg"
+      <ChatActivityProvider bots={members} work={subAgents.get}>
+        <Conversation className="min-h-0">
+          <ConversationContent className="mx-auto w-full max-w-[800px] gap-6 px-4 py-6">
+            {messages.length === 0 && !busy && (
+              <EmptyChat
+                title={chat.title}
+                description={
+                  group
+                    ? "Pick who answers below, or turn on autopilot and let the bots work it out together."
+                    : (chat.bot?.job ?? "")
+                }
+                face={
+                  group ? (
+                    <GroupChatAvatar members={members} className="size-12" />
+                  ) : (
+                    <ChatAvatar
+                      seed={members[0]?.avatar ?? chatId}
+                      className="size-12 rounded-lg"
+                    />
+                  )
+                }
+                suggestions={group ? suggestions.group : suggestions.direct}
+                onSuggest={
+                  bot ? (text) => send({ text, files: [] }) : undefined
+                }
+              />
+            )}
+            {messages.map((message) => {
+              if (message.role === "user") {
+                const quotedId = message.metadata?.replyTo
+                const quoted = quotedId
+                  ? messages.find((earlier) => earlier.id === quotedId)
+                  : undefined
+                return (
+                  <UserMessage
+                    key={message.id}
+                    message={message}
+                    quoted={
+                      quoted && {
+                        id: quoted.id,
+                        author:
+                          quoted.role === "user"
+                            ? "You"
+                            : (authorOf(quoted)?.name ?? "A bot"),
+                        text: textOf(quoted),
+                      }
+                    }
                   />
                 )
               }
-              suggestions={group ? suggestions.group : suggestions.direct}
-              onSuggest={bot ? (text) => send({ text, files: [] }) : undefined}
-            />
-          )}
-          {messages.map((message) => {
-            if (message.role === "user") {
-              const quotedId = message.metadata?.replyTo
-              const quoted = quotedId
-                ? messages.find((earlier) => earlier.id === quotedId)
-                : undefined
+              // An answer with nothing to show yet is covered by the thinking
+              // row below.
+              if (!hasVisibleParts(message)) return null
+              const author = authorOf(message)
+              const latest = message.id === last?.id
+              const streaming = busy && message.id === incoming?.id
+              // A removed bot can't be asked again.
+              const canAsk = author !== undefined && membersById.has(author.id)
+              const flag = flagOf(message.id)
+              const flagOpen =
+                flag?.status === "awaiting_response" ||
+                flag?.status === "awaiting_review"
               return (
-                <UserMessage
+                <BotMessage
                   key={message.id}
-                  message={message}
-                  quoted={
-                    quoted && {
-                      id: quoted.id,
-                      author:
-                        quoted.role === "user"
-                          ? "You"
-                          : (authorOf(quoted)?.name ?? "A bot"),
-                      text: textOf(quoted),
+                  id={anchorOf(message.id)}
+                  bot={author}
+                  standing={author && standing.get(author.id)}
+                  flag={
+                    flag && {
+                      label:
+                        flag.status === "resolved"
+                          ? (overview?.actions.find(
+                              (action) => action.flagId === flag.id
+                            )?.action ?? "resolved")
+                          : flag.status,
                     }
                   }
-                />
+                >
+                  <AssistantParts message={message} streaming={streaming} />
+                  {!streaming && (
+                    <MessageToolbar
+                      text={textOf(message)}
+                      rating={ratings[message.id] ?? null}
+                      onRate={(rating) => rate(message.id, rating)}
+                      onReply={
+                        group && canAsk ? () => replyTo(message) : undefined
+                      }
+                      // A bot's answer in a group, once, while it's in it.
+                      onFlag={
+                        group && canAsk && !flagOpen && !busy
+                          ? () =>
+                              setFlagging({
+                                id: message.id,
+                                botId: author.id,
+                                botName: author.name,
+                                text: textOf(message),
+                              })
+                          : undefined
+                      }
+                      // Only the latest answer: an earlier one would drop
+                      // everything said after it.
+                      onRegenerate={
+                        latest && !busy && canAsk
+                          ? () => answerAgain(message.id, author.id)
+                          : undefined
+                      }
+                      className={cn("-ml-1.5", !latest && revealOnHover)}
+                    />
+                  )}
+                </BotMessage>
               )
-            }
-            // An answer with nothing to show yet is covered by the thinking
-            // row below.
-            if (!hasVisibleParts(message)) return null
-            const author = authorOf(message)
-            const latest = message.id === last?.id
-            const streaming = busy && message.id === incoming?.id
-            // A removed bot can't be asked again.
-            const canAsk = author !== undefined && membersById.has(author.id)
-            const flag = flagOf(message.id)
-            const flagOpen =
-              flag?.status === "awaiting_response" ||
-              flag?.status === "awaiting_review"
-            return (
-              <BotMessage
-                key={message.id}
-                id={anchorOf(message.id)}
-                bot={author}
-                standing={author && standing.get(author.id)}
-                flag={
-                  flag && {
-                    label:
-                      flag.status === "resolved"
-                        ? (overview?.actions.find(
-                            (action) => action.flagId === flag.id
-                          )?.action ?? "resolved")
-                        : flag.status,
-                  }
-                }
-              >
-                <AssistantParts message={message} streaming={streaming} />
-                {!streaming && (
-                  <MessageToolbar
-                    text={textOf(message)}
-                    rating={ratings[message.id] ?? null}
-                    onRate={(rating) => rate(message.id, rating)}
-                    onReply={
-                      group && canAsk ? () => replyTo(message) : undefined
-                    }
-                    // A bot's answer in a group, once, while it's in it.
-                    onFlag={
-                      group && canAsk && !flagOpen && !busy
-                        ? () =>
-                            setFlagging({
-                              id: message.id,
-                              botId: author.id,
-                              botName: author.name,
-                              text: textOf(message),
-                            })
-                        : undefined
-                    }
-                    // Only the latest answer: an earlier one would drop
-                    // everything said after it.
-                    onRegenerate={
-                      latest && !busy && canAsk
-                        ? () => answerAgain(message.id, author.id)
-                        : undefined
-                    }
-                    className={cn("-ml-1.5", !latest && revealOnHover)}
-                  />
-                )}
+            })}
+            {thinking && (
+              <BotMessage bot={askedBot}>
+                <Shimmer>Thinking…</Shimmer>
               </BotMessage>
-            )
-          })}
-          {thinking && (
-            <BotMessage bot={askedBot}>
-              <Shimmer>Thinking…</Shimmer>
-            </BotMessage>
-          )}
-          {(due || autoFailed) && !busy && !error && (
-            <div
-              role={autoFailed ? "alert" : undefined}
-              className="flex items-center gap-3 text-sm text-muted-foreground"
-            >
-              {autoFailed ? "Something went wrong." : dueText}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => carryOn(last?.id)}
+            )}
+            {(due || autoFailed) && !busy && !error && (
+              <div
+                role={autoFailed ? "alert" : undefined}
+                className="flex items-center gap-3 text-sm text-muted-foreground"
               >
-                {autoFailed ? "Try again" : "Carry on"}
-              </Button>
-            </div>
-          )}
-          {error && (
-            <div
-              role="alert"
-              className="flex items-center gap-3 text-sm text-muted-foreground"
-            >
-              Something went wrong.
-              <Button variant="outline" size="sm" onClick={retry}>
-                Try again
-              </Button>
-            </div>
-          )}
-        </ConversationContent>
-        <ConversationScrollButton />
-      </Conversation>
+                {autoFailed ? "Something went wrong." : dueText}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => carryOn(last?.id)}
+                >
+                  {autoFailed ? "Try again" : "Carry on"}
+                </Button>
+              </div>
+            )}
+            {autopilot && autopilotStop && !busy && !error && !autoFailed && (
+              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                {autopilotStop === "limit"
+                  ? `Autopilot paused after ${MAX_AUTOPILOT_TURNS} turns in a row.`
+                  : "On autopilot. The bots have nothing to do right now."}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => carryOn(last?.id)}
+                >
+                  {autopilotStop === "limit" ? "Keep going" : "Check again"}
+                </Button>
+              </div>
+            )}
+            {error && (
+              <div
+                role="alert"
+                className="flex items-center gap-3 text-sm text-muted-foreground"
+              >
+                Something went wrong.
+                <Button variant="outline" size="sm" onClick={retry}>
+                  Try again
+                </Button>
+              </div>
+            )}
+          </ConversationContent>
+          <ConversationScrollButton />
+        </Conversation>
+      </ChatActivityProvider>
       {/* While the bot answers, send turns into stop. */}
       <DockedComposer
         inputRef={inputRef}
         placeholder={placeholderFor(bot)}
         disabled={!bot}
         attachments={attachments}
-        onSend={busy || !bot ? undefined : send}
+        // While turns run on their own, a message waits for the one in
+        // hand; while the user's own is answered, there's only stop.
+        onSend={!bot ? undefined : !busy ? send : auto ? queue : undefined}
         onStop={busy ? stopAnswer : undefined}
         header={
-          replyMessage && (
+          queued ? (
             <ReplyBanner
-              author={replyAuthor?.name ?? "a bot"}
-              text={textOf(replyMessage)}
-              onCancel={() => setReplyId(null)}
+              label="Sends next"
+              author="You"
+              text={queued}
+              onCancel={() => {
+                queuedRef.current = null
+                setQueued(null)
+              }}
             />
+          ) : (
+            replyMessage && (
+              <ReplyBanner
+                label="Replying to"
+                author={replyAuthor?.name ?? "a bot"}
+                text={textOf(replyMessage)}
+                onCancel={() => setReplyId(null)}
+              />
+            )
           )
         }
         toolbar={
@@ -716,6 +864,22 @@ function ChatMessages({
                 value={models[bot.id] ?? bot.model}
                 onValueChange={(next) => changeModel(bot.id, next)}
               />
+            )}
+            {group && bot && (
+              <Toggle
+                size="sm"
+                pressed={autopilot}
+                onPressedChange={switchAutopilot}
+                aria-label="Autopilot"
+                title={
+                  autopilot
+                    ? "On autopilot: the bots carry on without you"
+                    : "Let the bots carry on without you"
+                }
+              >
+                <PlaneIcon data-icon="inline-start" />
+                <span className="hidden sm:inline">Autopilot</span>
+              </Toggle>
             )}
             <ChatUsage messages={messages} />
           </>
@@ -769,12 +933,15 @@ function EmptyChat({
   )
 }
 
-// Above the composer's text: the answer being replied to, with a way out.
+// Above the composer's text: the answer being replied to, or the user's
+// message waiting to send, with a way out.
 function ReplyBanner({
+  label,
   author,
   text,
   onCancel,
 }: {
+  label: string
   author: string
   text: string
   onCancel: () => void
@@ -782,13 +949,14 @@ function ReplyBanner({
   return (
     <div className="flex w-full min-w-0 items-center gap-2 rounded-md bg-muted py-1 pr-1 pl-2 text-xs">
       <ReplyIcon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="sr-only">{label}</span>
       <span className="shrink-0 font-mono text-accent-foreground">
         {author}
       </span>
       <span className="truncate text-muted-foreground">{text}</span>
       <InputGroupButton
         size="icon-xs"
-        aria-label="Cancel reply"
+        aria-label={`Cancel: ${label.toLowerCase()}`}
         className="ml-auto shrink-0"
         onClick={onCancel}
       >

@@ -77,9 +77,10 @@ export async function getChatRatings(chatId: string) {
 }
 
 // How one of the user's groups governs itself, for its page: roles and
-// constitution, flags, tasks and the moderation record, and each bot's role
-// and standing. Null for a chat that isn't the user's group. The shared memory
-// stays out: it's for the bots, not the page.
+// constitution, flags, tasks, votes and the moderation record, each bot's
+// role and standing, and whether it's on autopilot. Null for a chat that
+// isn't the user's group. The shared memory stays out: it's for the bots,
+// not the page.
 export async function getGroupOverview(chatId: string) {
   const chat = await getChat(chatId)
   if (chat?.kind !== "group") return null
@@ -104,7 +105,9 @@ export async function getGroupOverview(chatId: string) {
     })),
     flags: state.flags,
     tasks: state.tasks,
+    votes: state.votes,
     actions: state.actions,
+    autopilot: state.autopilot,
   }
 }
 

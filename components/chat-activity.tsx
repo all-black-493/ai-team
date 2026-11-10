@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, type ReactNode } from "react"
+import { createContext, use, useState, type ReactNode } from "react"
 import {
   getToolName,
   isToolUIPart,
@@ -13,6 +13,7 @@ import {
 import {
   ArrowUpRightIcon,
   BracesIcon,
+  ClipboardListIcon,
   BrainIcon,
   CodeIcon,
   EyeIcon,
@@ -54,12 +55,28 @@ import {
   UserCogIcon,
   UserMinusIcon,
   UserPlusIcon,
+  UsersIcon,
+  VoteIcon,
   WrenchIcon,
   type LucideIcon,
 } from "lucide-react"
 
 import { Image } from "@/components/ai-elements/image"
 import { MessageResponse } from "@/components/ai-elements/message"
+import { Shimmer } from "@/components/ai-elements/shimmer"
+import { ChatAvatar } from "@/components/chat-avatar"
+import { Badge } from "@/components/ui/badge"
+import {
+  CONSULT_TOOL,
+  DELEGATE_TOOL,
+  PARALLEL_TOOLS,
+  tally,
+  VOTE_TOOL,
+  workKey,
+  type ParallelOutput,
+  type VoteOutput,
+  type WorkResult,
+} from "@/chats/collaboration"
 import { MODERATION_ACTIONS, PERMISSIONS } from "@/lib/governance"
 import {
   Terminal,
@@ -84,6 +101,47 @@ import {
 type ToolPart = ToolUIPart | DynamicToolUIPart
 type Phase = "running" | "done" | "failed"
 type Fields = Record<string, unknown>
+
+type ActivityBot = { id: string; name: string; avatar: string }
+
+// What a group's activity needs from the chat: its bots, for their faces,
+// and the live answer of each bot at work in a consult or delegate call,
+// by workKey, while it streams in.
+const ActivityContext = createContext<{
+  bots: ActivityBot[]
+  work: (key: string) => UIMessage | undefined
+}>({ bots: [], work: () => undefined })
+
+export function ChatActivityProvider({
+  bots,
+  work,
+  children,
+}: {
+  bots: ActivityBot[]
+  work: (key: string) => UIMessage | undefined
+  children: ReactNode
+}) {
+  return <ActivityContext value={{ bots, work }}>{children}</ActivityContext>
+}
+
+// A bot by ID, or failing that by name; one that has left keeps a face.
+function useFace() {
+  const { bots } = use(ActivityContext)
+  return (botId: string | undefined, name: string) =>
+    bots.find((bot) => bot.id === botId) ??
+    bots.find(
+      (bot) => bot.name.toLowerCase() === name.trim().toLowerCase()
+    ) ?? {
+      id: botId ?? name,
+      name,
+      avatar: botId ?? name,
+    }
+}
+
+const listOf = (names: string[]) =>
+  names.length <= 1
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
 
 // A field of a tool's input or output, as text.
 function field(value: unknown, key: string) {
@@ -464,6 +522,15 @@ const toolMeta: Record<string, ToolMeta> = {
         .map(([label, text]) => `${label}: ${text}`)
         .join("\n\n"),
   },
+  // A bot working on a delegated task says whether it's done.
+  finish_task: {
+    icon: ListChecksIcon,
+    verbs: ["Reporting on", "Reported on", "Couldn't report on"],
+    subject: () => "the task",
+    description: (input) =>
+      (input as { done?: boolean } | undefined)?.done ? "Done" : "Not done yet",
+    detail: (_output, input) => field(input, "summary"),
+  },
   moderate: {
     icon: GavelIcon,
     verbs: ["Deciding", "Decided", "Couldn't decide"],
@@ -578,6 +645,255 @@ function ToolRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
     >
       {detail}
     </ToolDetail>
+  )
+}
+
+// Bots set to work at once by a consult or delegate call: a line for the
+// call, then one for each bot, which opens on its answer, live while it
+// works. A bot's answer, once it's done, is kept with the call's output.
+function ParallelWork({
+  part,
+  streaming,
+}: {
+  part: ToolPart
+  streaming: boolean
+}) {
+  const { work } = use(ActivityContext)
+  const face = useFace()
+  const name = getToolName(part)
+  const phase = phaseOf(part, streaming)
+  const input = part.input as
+    | {
+        asks?: { bot?: string; request?: string }[]
+        tasks?: { to?: string; title?: string }[]
+      }
+    | undefined
+  const asked =
+    name === CONSULT_TOOL
+      ? (input?.asks ?? []).map((ask) => ({
+          bot: ask?.bot ?? "",
+          request: ask?.request ?? "",
+        }))
+      : (input?.tasks ?? []).map((task) => ({
+          bot: task?.to ?? "",
+          request: task?.title ?? "",
+        }))
+  const results =
+    part.state === "output-available"
+      ? (part.output as ParallelOutput | undefined)?.results
+      : undefined
+  const verbs =
+    name === DELEGATE_TOOL
+      ? ["Delegating to", "Delegated to", "Couldn't delegate to"]
+      : ["Asking", "Asked", "Couldn't ask"]
+  const verb = verbs[phase === "running" ? 0 : phase === "done" ? 1 : 2]
+  const who = listOf(asked.map((ask) => ask.bot).filter(Boolean))
+
+  const line = (
+    <TraceLine
+      status={
+        phase === "running"
+          ? "running"
+          : phase === "failed"
+            ? "error"
+            : undefined
+      }
+    >
+      <TraceIcon>
+        {name === DELEGATE_TOOL ? <ClipboardListIcon /> : <UsersIcon />}
+      </TraceIcon>
+      <TraceTitle>{who ? `${verb} ${who}` : verb.split(" ")[0]}</TraceTitle>
+      {asked.length > 1 && <TraceDescription>At once</TraceDescription>}
+    </TraceLine>
+  )
+  if (part.state === "output-error") {
+    return (
+      <ToolDetail line={line} live={false}>
+        {part.errorText}
+      </ToolDetail>
+    )
+  }
+
+  return (
+    <>
+      {line}
+      {asked.map((ask, index) => (
+        <WorkLine
+          key={index}
+          ask={ask}
+          result={results?.[index]}
+          live={work(workKey(part.toolCallId, index))}
+          running={phase === "running"}
+          face={face}
+        />
+      ))}
+    </>
+  )
+}
+
+// What a bot's line says about how its work went.
+function workStatus(result: WorkResult | undefined, running: boolean) {
+  if (!result) return running ? "Working" : "Stopped"
+  if (result.status === "failed") return "Couldn't finish"
+  if (result.status === "stopped") return "Stopped"
+  if (result.taskId) return result.taskDone ? "Task done" : "Task not done"
+  return "Done"
+}
+
+function WorkLine({
+  ask,
+  result,
+  live,
+  running,
+  face,
+}: {
+  ask: { bot: string; request: string }
+  result: WorkResult | undefined
+  live: UIMessage | undefined
+  running: boolean
+  face: ReturnType<typeof useFace>
+}) {
+  const working = running && !result
+  const message = live ?? result?.message
+  const botId =
+    result?.botId ??
+    (message?.metadata as { botId?: string } | undefined)?.botId
+  const bot = face(botId, result?.bot ?? ask.bot)
+  const status = workStatus(result, running)
+  // Opens on the work as it happens; afterwards, it's there on a click.
+  const [defaultOpen] = useState(working)
+
+  return (
+    <TraceCollapsible defaultOpen={defaultOpen} className="pl-6">
+      <TraceCollapsibleTrigger>
+        <TraceLine
+          status={
+            working
+              ? "running"
+              : result && result.status !== "done"
+                ? "error"
+                : undefined
+          }
+        >
+          <TraceIcon>
+            <ChatAvatar seed={bot.avatar} className="size-4 rounded-sm" />
+          </TraceIcon>
+          <TraceTitle>
+            {bot.name}
+            {ask.request && `: ${shorten(ask.request, 60)}`}
+          </TraceTitle>
+          <TraceDescription>{status}</TraceDescription>
+        </TraceLine>
+      </TraceCollapsibleTrigger>
+      <TraceCollapsibleContent>
+        {message && hasVisibleParts(message) ? (
+          <AssistantParts message={message} streaming={working} />
+        ) : working ? (
+          <Shimmer>Working…</Shimmer>
+        ) : (
+          result?.report && <MessageResponse>{result.report}</MessageResponse>
+        )}
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
+  )
+}
+
+// A vote: its question and, as ballots come in, the count and each bot's
+// choice and reason. Open while the bots vote.
+function VoteRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
+  const face = useFace()
+  const phase = phaseOf(part, streaming)
+  const input = part.input as { question?: string } | undefined
+  const vote =
+    part.state === "output-available"
+      ? (part.output as VoteOutput | undefined)
+      : undefined
+  const question = vote?.question ?? input?.question
+  const verb =
+    phase === "running"
+      ? "Calling a vote"
+      : phase === "done"
+        ? "Called a vote"
+        : "Couldn't call a vote"
+  const description = !vote
+    ? undefined
+    : vote.decided
+      ? vote.outcome
+        ? `Decided: ${vote.outcome}`
+        : "Tied"
+      : `${vote.ballots.length} of ${vote.ballots.length + vote.waiting.length} voted`
+  const [defaultOpen] = useState(phase === "running")
+
+  const line = (
+    <TraceLine
+      status={
+        phase === "running"
+          ? "running"
+          : phase === "failed"
+            ? "error"
+            : undefined
+      }
+    >
+      <TraceIcon>
+        <VoteIcon />
+      </TraceIcon>
+      <TraceTitle>
+        {question ? `${verb} on “${shorten(question, 70)}”` : verb}
+      </TraceTitle>
+      {description && <TraceDescription>{description}</TraceDescription>}
+    </TraceLine>
+  )
+  if (part.state === "output-error") {
+    return (
+      <ToolDetail line={line} live={false}>
+        {part.errorText}
+      </ToolDetail>
+    )
+  }
+  if (!vote) return line
+
+  return (
+    <TraceCollapsible defaultOpen={defaultOpen}>
+      <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
+      <TraceCollapsibleContent className="flex flex-col gap-3">
+        <div className="flex flex-wrap gap-1.5">
+          {tally(vote.options, vote.ballots).map(({ option, votes }) => (
+            <Badge
+              key={option}
+              variant={
+                vote.decided && option === vote.outcome ? "default" : "outline"
+              }
+            >
+              {option} · {votes}
+            </Badge>
+          ))}
+        </div>
+        <ul className="flex flex-col gap-2">
+          {vote.ballots.map((ballot) => {
+            const bot = face(ballot.botId, ballot.bot)
+            return (
+              <li key={ballot.botId} className="flex items-start gap-2 text-sm">
+                <ChatAvatar
+                  seed={bot.avatar}
+                  className="mt-0.5 size-4 shrink-0 rounded-sm"
+                />
+                <span>
+                  <span className="font-mono text-xs text-accent-foreground">
+                    {bot.name}
+                  </span>{" "}
+                  {ballot.choice}. {ballot.reason}
+                </span>
+              </li>
+            )
+          })}
+          {vote.waiting.length > 0 && (
+            <li className="text-sm">
+              <Shimmer>{`Waiting for ${listOf(vote.waiting)}…`}</Shimmer>
+            </li>
+          )}
+        </ul>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
   )
 }
 
@@ -741,7 +1057,14 @@ export function AssistantParts({
         )
         return
       }
-      run.push(<ToolRow key={key} part={part} streaming={streaming} />)
+      const name = getToolName(part)
+      if (PARALLEL_TOOLS.includes(name)) {
+        run.push(<ParallelWork key={key} part={part} streaming={streaming} />)
+      } else if (name === VOTE_TOOL) {
+        run.push(<VoteRow key={key} part={part} streaming={streaming} />)
+      } else {
+        run.push(<ToolRow key={key} part={part} streaming={streaming} />)
+      }
     }
   })
 

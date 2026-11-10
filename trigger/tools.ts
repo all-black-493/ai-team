@@ -3,7 +3,8 @@ import type { Sandbox } from "@daytona/sdk"
 import { tool } from "ai"
 import { z } from "zod"
 
-import { startDesktop } from "@/lib/sandbox"
+import { getChatBot } from "@/chats/bot"
+import { getStartedSandbox, startDesktop } from "@/lib/sandbox"
 
 type BotSandbox = {
   getBot: () => Promise<{ name: string }>
@@ -726,4 +727,29 @@ export function createBotTools({ getBot, getSandbox }: BotSandbox) {
       },
     }),
   }
+}
+
+// A chat bot's sandbox tools. The bot is loaded, and its sandbox started,
+// the first time a tool needs them. `botId` is the bot answering a turn or
+// working on an assignment; without it, the chat's first bot (a direct
+// chat's only one).
+export function createChatBotTools(chatId: string, botId: string | undefined) {
+  let bot: ReturnType<typeof getChatBot> | undefined
+  let sandbox: Promise<Sandbox> | undefined
+  const getBot = () => (bot ??= getChatBot(chatId, botId))
+  return createBotTools({
+    getBot,
+    getSandbox: () => {
+      sandbox ??= getBot()
+        .then(({ sandboxId }) => {
+          if (!sandboxId) throw new Error("You don't have a sandbox.")
+          return getStartedSandbox(sandboxId)
+        })
+        .catch((error) => {
+          sandbox = undefined
+          throw error
+        })
+      return sandbox
+    },
+  })
 }

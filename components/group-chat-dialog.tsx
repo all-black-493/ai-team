@@ -69,6 +69,8 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { toast } from "@/components/ui/toast"
+import { tally } from "@/chats/collaboration"
+import { tally } from "@/chats/collaboration"
 import type { GroupOverview } from "@/chats/queries"
 import { groupChatInsertSchema, type GroupChatInsert } from "@/db/schema"
 import {
@@ -511,7 +513,7 @@ function GroupRules({
   )
 }
 
-// What's been happening: flags, tasks and the moderation record.
+// What's been happening: flags, tasks, votes and the moderation record.
 function GroupActivity({
   group,
   overview,
@@ -573,8 +575,36 @@ function GroupActivity({
                     {task.assigneeId
                       ? `${nameOf(task.assigneeId)}'s`
                       : "Unassigned"}
-                    {task.proposedBy &&
-                      `, proposed by ${nameOf(task.proposedBy)}`}
+                    {task.proposedBy && `, from ${nameOf(task.proposedBy)}`}
+                    {task.result && `: ${task.result}`}
+                  </ItemDescription>
+                </ItemContent>
+              </Item>
+            ))}
+          </ItemGroup>
+        )}
+      </section>
+      <section className="flex flex-col gap-2">
+        <h3 className="font-medium">Votes</h3>
+        {overview.votes.length === 0 ? (
+          <p className="text-muted-foreground">No votes yet.</p>
+        ) : (
+          <ItemGroup className="gap-2">
+            {overview.votes.map((vote) => (
+              <Item key={vote.id} variant="outline" size="sm">
+                <ItemContent>
+                  <ItemTitle>
+                    {vote.question}
+                    <Badge variant={vote.outcome ? "secondary" : "outline"}>
+                      {vote.outcome ?? "Tied"}
+                    </Badge>
+                  </ItemTitle>
+                  <ItemDescription className="line-clamp-none">
+                    Called by {nameOf(vote.calledBy)} {ago(vote.createdAt)}:{" "}
+                    {tally(vote.options, vote.ballots)
+                      .filter(({ votes }) => votes > 0)
+                      .map(({ option, votes }) => `${option} ${votes}`)
+                      .join(", ")}
                   </ItemDescription>
                 </ItemContent>
               </Item>

@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid"
 import { relations } from "drizzle-orm"
 import {
+  boolean,
   index,
   jsonb,
   pgEnum,
@@ -128,6 +129,9 @@ export const chats = pgTable(
       withTimezone: true,
     }),
     sharedMemoryUpdatedBy: text("shared_memory_updated_by"),
+    // A group on autopilot: its bots carry on together, one after another,
+    // without waiting for the user.
+    autopilot: boolean("autopilot").notNull().default(false),
     lastMessagePreview: text("last_message_preview"),
     lastMessageAt: timestamp("last_message_at", { withTimezone: true })
       .notNull()
@@ -358,6 +362,8 @@ export const groupTasks = pgTable(
       onDelete: "set null",
     }),
     status: groupTaskStatus("status").notNull().default("open"),
+    // What the assignee reported, once it worked on a delegated task.
+    result: text("result"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -369,6 +375,42 @@ export const groupTasks = pgTable(
 )
 
 export type GroupTask = typeof groupTasks.$inferSelect
+
+// One bot's ballot in a vote, with why.
+export type Ballot = {
+  botId: string
+  choice: string
+  reason: string
+}
+
+// A question a group's bots voted on. Every bot that may vote casts its
+// ballot at once when the vote is called, so a vote is decided as it's
+// recorded: `outcome` is the winning option, or null for a tie.
+export const groupVotes = pgTable(
+  "group_votes",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => nanoid()),
+    chatId: text("chat_id")
+      .notNull()
+      .references(() => chats.id, { onDelete: "cascade" }),
+    // The bot that called it.
+    calledBy: text("called_by").references(() => bots.id, {
+      onDelete: "set null",
+    }),
+    question: text("question").notNull(),
+    options: text("options").array().notNull(),
+    ballots: jsonb("ballots").$type<Ballot[]>().notNull(),
+    outcome: text("outcome"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("group_votes_chat_id_idx").on(t.chatId)]
+)
+
+export type GroupVote = typeof groupVotes.$inferSelect
 
 export const botsRelations = relations(bots, ({ many }) => ({
   memberships: many(chatMembers),

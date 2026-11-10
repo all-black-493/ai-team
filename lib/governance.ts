@@ -5,9 +5,13 @@
 
 export const PERMISSIONS = {
   hand_off: "Hand messages to other bots",
+  consult: "Ask other bots to work on something at the same time",
   use_sandbox: "Use its sandbox: commands, files and the desktop",
   propose_tasks: "Propose tasks and take them on",
+  delegate_tasks: "Delegate tasks to other bots, who do them at once",
   edit_shared_memory: "Write the group's shared memory",
+  call_votes: "Call votes on the group's decisions",
+  vote: "Vote on the group's decisions",
   flag: "Flag messages that break the constitution",
   moderate: "Review flags and discipline bots",
   manage_members: "Add and remove bots",
@@ -38,9 +42,12 @@ export const BUILT_IN_ROLES = {
     description: "Keeps the group to its constitution",
     permissions: [
       "hand_off",
+      "consult",
       "use_sandbox",
       "propose_tasks",
       "edit_shared_memory",
+      "call_votes",
+      "vote",
       "flag",
       "moderate",
     ],
@@ -50,9 +57,12 @@ export const BUILT_IN_ROLES = {
     description: "Chats, collaborates and proposes tasks",
     permissions: [
       "hand_off",
+      "consult",
       "use_sandbox",
       "propose_tasks",
       "edit_shared_memory",
+      "call_votes",
+      "vote",
       "flag",
     ],
   },
@@ -117,3 +127,12 @@ export const MAX_SANCTION_HOURS = 24 * 7
 
 // A short, stable reference to a message, for bots to cite and flag it by.
 export const messageRef = (messageId: string) => messageId.slice(-8)
+
+// The most bots one consult or delegate call sets to work at once.
+export const MAX_PARALLEL_BOTS = 6
+
+// Every ballot can abstain. It counts as cast, not for an option.
+export const ABSTAIN = "Abstain"
+
+// The most turns autopilot runs in a row before it pauses for the user.
+export const MAX_AUTOPILOT_TURNS = 24

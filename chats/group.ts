@@ -1,11 +1,12 @@
 import { getToolName, isToolUIPart, type UIMessage } from "ai"
 
+import { DELEGATE_TOOL, VOTE_TOOL } from "@/chats/collaboration"
 import { HANDOFF_TOOL } from "@/chats/handoff"
 
-// Tools that change what the page shows of a group (trigger/group-tools.ts):
-// its bots, roles, constitution, tasks, flags or moderation. The page loads
-// the group again after an answer uses one. The shared memory isn't shown, so
-// updating it needs no reload.
+// Tools that change what the page shows of a group (trigger/group-tools.ts,
+// trigger/collaboration.ts): its bots, roles, constitution, tasks, votes,
+// flags or moderation. The page loads the group again after an answer uses
+// one. The shared memory isn't shown, so updating it needs no reload.
 const GROUP_CHANGING_TOOLS = [
   "add_group_member",
   "remove_group_member",
@@ -17,6 +18,8 @@ const GROUP_CHANGING_TOOLS = [
   "set_constitution",
   "propose_task",
   "update_task",
+  DELEGATE_TOOL,
+  VOTE_TOOL,
   "flag_message",
   "answer_flag",
   "moderate",

@@ -27,6 +27,8 @@ import {
   messageRef,
   type ModerationAction,
 } from "@/lib/governance"
+import { createCollaborationTools } from "@/trigger/collaboration"
+import { taskRef } from "@/trigger/prompt"
 
 // Names match ignoring case and spaces.
 const same = (a: string, b: string) =>
@@ -48,13 +50,11 @@ const memberIn = (state: GroupState, name: string) =>
 const userBotsOf = (state: GroupState) =>
   state.members.filter((member) => !member.groupChatId)
 
-// A task's reference, for bots to cite it by.
-export const taskRef = (taskId: string) => taskId.slice(-6)
-
-// The tools a bot governs its group with, for this turn: the ones its role
-// allows, less any a moderator has restricted. A flagged bot answering its
-// flag gets answer_flag; a moderator reviewing one gets moderate. The page
-// loads the group again after any of them (chats/group.ts).
+// The tools a bot governs its group and works with the others with, for
+// this turn: the ones its role allows, less any a moderator has restricted.
+// A flagged bot answering its flag gets answer_flag, and a moderator
+// reviewing one gets moderate, and nothing else. The page loads the group
+// again after those that change it (chats/group.ts).
 export async function createGroupTools({
   state,
   bot,
@@ -449,7 +449,7 @@ export async function createGroupTools({
     tools.moderate = createModerateTool(state, bot)
   }
 
-  return tools
+  return { ...tools, ...createCollaborationTools({ state, bot, history }) }
 }
 
 // Decides a flag that has its bot's response, unless it's against this bot:

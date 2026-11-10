@@ -5,6 +5,7 @@ import { handoffOf, type Handoff } from "@/chats/handoff"
 import { db } from "@/db"
 import {
   groupTasks,
+  groupVotes,
   messageFlags,
   moderationActions,
   type GroupRole,
@@ -19,8 +20,9 @@ import {
 // Not scoped to a user, so callers check who's asking first. No
 // "server-only" guard: the Trigger.dev agent imports this too.
 
-// How many past moderation actions a group's state carries.
+// How many past moderation actions and votes a group's state carries.
 const RECENT_ACTIONS = 50
+const RECENT_VOTES = 20
 
 export type MemberRole = {
   id: string | null
@@ -35,8 +37,9 @@ function permissionsOf(role: Pick<GroupRole, "kind" | "permissions">) {
 }
 
 // A chat with everything that governs it: its roles and constitution, its
-// bots with their roles and standing, open flags, tasks, and the moderation
-// record. A direct chat comes back with its one bot and nothing else.
+// bots with their roles and standing, open flags, tasks, votes, the
+// moderation record, and whether it's on autopilot. A direct chat comes back
+// with its one bot and nothing else.
 export async function loadGroupState(chatId: string) {
   const chat = await db.query.chats.findFirst({
     where: (chats, { eq }) => eq(chats.id, chatId),
@@ -51,6 +54,7 @@ export async function loadGroupState(chatId: string) {
       sharedMemory: true,
       sharedMemoryUpdatedAt: true,
       sharedMemoryUpdatedBy: true,
+      autopilot: true,
     },
     with: {
       roles: { orderBy: (roles, { asc }) => [asc(roles.createdAt)] },
@@ -78,7 +82,7 @@ export async function loadGroupState(chatId: string) {
     throw new Error(`Chat ${chatId} not found`)
   }
 
-  const [flags, tasks, actions] = await Promise.all([
+  const [flags, tasks, actions, votes] = await Promise.all([
     db.query.messageFlags.findMany({
       where: eq(messageFlags.chatId, chatId),
       orderBy: (flags, { asc }) => [asc(flags.createdAt)],
@@ -91,6 +95,11 @@ export async function loadGroupState(chatId: string) {
       where: eq(moderationActions.chatId, chatId),
       orderBy: [desc(moderationActions.createdAt)],
       limit: RECENT_ACTIONS,
+    }),
+    db.query.groupVotes.findMany({
+      where: eq(groupVotes.chatId, chatId),
+      orderBy: [desc(groupVotes.createdAt)],
+      limit: RECENT_VOTES,
     }),
   ])
 
@@ -153,6 +162,7 @@ export async function loadGroupState(chatId: string) {
     sharedMemory: chat.sharedMemory,
     sharedMemoryUpdatedAt: chat.sharedMemoryUpdatedAt,
     sharedMemoryUpdatedBy: chat.sharedMemoryUpdatedBy,
+    autopilot: chat.autopilot,
     roles: chat.roles.map((role) => ({
       ...role,
       permissions: permissionsOf(role),
@@ -161,6 +171,7 @@ export async function loadGroupState(chatId: string) {
     flags,
     tasks,
     actions,
+    votes,
   }
 }
 
@@ -184,19 +195,22 @@ export function reviewerFor(state: GroupState, flag: MessageFlag) {
 }
 
 // A turn the chat runs on its own, with no new message from the user: a
-// handed-off message's answer, a flagged bot's response, or a moderator's
-// review.
+// handed-off message's answer, a flagged bot's response, a moderator's
+// review, or on autopilot, the bot picked to speak next and why.
 export type PendingTurn =
   | { kind: "handoff"; botId: string; handoff: Handoff; fromBotId?: string }
   | { kind: "flag-response"; botId: string; flag: MessageFlag }
   | { kind: "flag-review"; botId: string; flag: MessageFlag }
+  | { kind: "autopilot"; botId: string; reason: string }
 
 const isMember = (state: GroupState, botId: string) =>
   state.members.some((member) => member.id === botId)
 
-// The next such turn, if any: a handoff first, then the oldest flag still
-// waiting for its bot's response, then the oldest waiting for review. A
-// flag whose bot has left the group, or with nobody to review it, waits.
+// The next such turn that's due whatever else happens, if any: a handoff
+// first, then the oldest flag still waiting for its bot's response, then the
+// oldest waiting for review. A flag whose bot has left the group, or with
+// nobody to review it, waits. Autopilot's turns are picked elsewhere
+// (trigger/autopilot.ts), once none of these is due.
 export function pendingTurn(
   state: GroupState,
   history: UIMessage[]

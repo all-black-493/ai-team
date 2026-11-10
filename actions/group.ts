@@ -276,3 +276,28 @@ export async function flagMessage(chatId: string, input: MessageFlagInsert) {
   revalidatePath(`/chats/${id}`)
   return flag
 }
+
+// Puts one of the user's groups on autopilot, or takes it off. On autopilot
+// its bots carry on together after each answer, without waiting for the
+// user. Returns whether it's on.
+export async function setAutopilot(chatId: string, on: boolean) {
+  const { isAuthenticated, userId } = await auth()
+  if (!isAuthenticated) {
+    throw new Error("Unauthorized")
+  }
+
+  const id = chatIdSchema.parse(chatId)
+  const [chat] = await db
+    .update(chats)
+    .set({ autopilot: z.boolean().parse(on) })
+    .where(
+      and(eq(chats.id, id), eq(chats.userId, userId), eq(chats.kind, "group"))
+    )
+    .returning({ autopilot: chats.autopilot })
+  if (!chat) {
+    throw new Error("Group not found")
+  }
+
+  revalidatePath(`/chats/${id}`)
+  return chat.autopilot
+}
