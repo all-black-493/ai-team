@@ -16,6 +16,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.99",
     "@ai-sdk/google": "^4.0.114",
+    "@ai-sdk/mcp": "^2.0.93",
     "@ai-sdk/openai": "^4.0.111",
     "@ai-sdk/react": "^4.0.170",
     "@ai-sdk/xai": "^5.0.40",
@@ -37,6 +38,7 @@
     "@streamdown/math": "^1.0.3",
     "@streamdown/mermaid": "^1.0.3",
     "@trigger.dev/sdk": "^4.8.3",
+    "@vercel/blob": "^2.9.0",
     "@vercel/functions": "^3.11.1",
     "@xyflow/react": "^12.12.1",
     "ai": "^7.0.166",

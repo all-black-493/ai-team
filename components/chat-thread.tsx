@@ -8,11 +8,14 @@ import {
   useLoadTranscript,
   useTriggerChatTransport,
 } from "@trigger.dev/sdk/chat/react"
-import type { UIMessage } from "ai"
+import { upload } from "@vercel/blob/client"
+import type { FileUIPart, UIMessage } from "ai"
+import { FileIcon } from "lucide-react"
 
 import {
   loadChatTranscript,
   mintChatAccessToken,
+  attachChatFile,
   startChatSession,
 } from "@/actions/chat"
 import {
@@ -20,15 +23,26 @@ import {
   ConversationContent,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation"
-import {
-  Message,
-  MessageContent,
-  MessageResponse,
-} from "@/components/ai-elements/message"
+import { Message, MessageContent } from "@/components/ai-elements/message"
 import { Shimmer } from "@/components/ai-elements/shimmer"
+import { AssistantParts, hasVisibleParts } from "@/components/chat-activity"
 import { ChatAvatar } from "@/components/chat-avatar"
-import { ChatComposer } from "@/components/chat-composer"
+import { ChatComposer, type ComposerMessage } from "@/components/chat-composer"
+import {
+  Attachment,
+  AttachmentContent,
+  AttachmentDescription,
+  AttachmentGroup,
+  AttachmentMedia,
+  AttachmentTitle,
+} from "@/components/ui/attachment"
 import { Button } from "@/components/ui/button"
+import { toast } from "@/components/ui/toast"
+import {
+  attachmentPrefix,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_LABEL,
+} from "@/chats/attachments"
 import type { botChat } from "@/trigger/chat"
 
 type ChatBot = { name: string; avatar: string }
@@ -37,6 +51,11 @@ type ChatThreadProps = {
   chatId: string
   bot: ChatBot
   placeholder: string
+}
+
+const attachments = {
+  maxBytes: MAX_ATTACHMENT_BYTES,
+  maxLabel: MAX_ATTACHMENT_LABEL,
 }
 
 function textOf(message: UIMessage) {
@@ -102,45 +121,75 @@ function ChatMessages({
   transport: TriggerChatTransport
   initialMessages: UIMessage[]
 }) {
-  const { messages, sendMessage, status, error, regenerate } = useChat({
+  const { messages, sendMessage, status, error, regenerate, stop } = useChat({
     id: chatId,
     messages: initialMessages,
     transport,
   })
   const busy = status === "submitted" || status === "streaming"
-
-  // Until the bot's first words arrive, show it thinking.
   const last = messages.at(-1)
-  const answering = busy && last?.role === "assistant" && textOf(last) !== ""
+
+  // Each file goes straight from the browser to the private Blob store, then
+  // into the bot's sandbox. The message carries only references to them.
+  async function send({ text, files }: ComposerMessage) {
+    const uploaded: FileUIPart[] = []
+    try {
+      for (const file of files) {
+        const name = file.name.replaceAll(/[^\w.-]+/g, "_") || "file"
+        const blob = await upload(`${attachmentPrefix(chatId)}${name}`, file, {
+          access: "private",
+          handleUploadUrl: "/api/chat-uploads",
+          clientPayload: chatId,
+        })
+        uploaded.push(
+          await attachChatFile(chatId, {
+            pathname: blob.pathname,
+            filename: file.name,
+            mediaType: file.type,
+          })
+        )
+      }
+    } catch (error) {
+      toast.add({
+        title: "Couldn't attach the files",
+        description: "Something went wrong. Please try again.",
+        type: "error",
+      })
+      throw error
+    }
+    // Not awaited: it settles when the answer ends, and the composer is free
+    // as soon as the message is on its way.
+    void sendMessage(uploaded.length > 0 ? { text, files: uploaded } : { text })
+  }
+
+  // useChat's stop only ends the local stream; the agent needs telling too,
+  // or it keeps going after a reload.
+  function stopAnswer() {
+    void stop()
+    void transport.stopGeneration(chatId)
+  }
 
   return (
     <>
       <Conversation className="min-h-0">
         <ConversationContent className="mx-auto w-full max-w-[800px] gap-6 px-4 py-6">
           {messages.map((message) => {
-            const text = textOf(message)
             if (message.role === "user") {
-              return (
-                <Message key={message.id} from="user">
-                  <MessageContent className="text-base group-[.is-user]:rounded-md group-[.is-user]:bg-muted group-[.is-user]:px-3 group-[.is-user]:py-2">
-                    <p className="whitespace-pre-wrap">{text}</p>
-                  </MessageContent>
-                </Message>
-              )
+              return <UserMessage key={message.id} message={message} />
             }
-            // An answer with no text yet is covered by the thinking row.
-            if (text === "") return null
+            // An answer with nothing to show yet is covered by the thinking
+            // row below.
+            if (!hasVisibleParts(message)) return null
             return (
               <BotMessage key={message.id} bot={bot}>
-                <MessageResponse
-                  isAnimating={answering && message.id === last?.id}
-                >
-                  {text}
-                </MessageResponse>
+                <AssistantParts
+                  message={message}
+                  streaming={busy && message.id === last?.id}
+                />
               </BotMessage>
             )
           })}
-          {busy && !answering && (
+          {busy && !(last?.role === "assistant" && hasVisibleParts(last)) && (
             <BotMessage bot={bot}>
               <Shimmer>Thinking…</Shimmer>
             </BotMessage>
@@ -159,12 +208,47 @@ function ChatMessages({
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
-      {/* No sending while the bot is still answering. */}
+      {/* While the bot answers, send turns into stop. */}
       <DockedComposer
         placeholder={placeholder}
-        onSend={busy ? undefined : (text) => sendMessage({ text })}
+        attachments={attachments}
+        onSend={busy ? undefined : send}
+        onStop={busy ? stopAnswer : undefined}
       />
     </>
+  )
+}
+
+// The user's turn: any attachments, then the text in a raised bubble. An
+// attachment lives in the bot's sandbox, so it shows by name, not preview.
+function UserMessage({ message }: { message: UIMessage }) {
+  const text = textOf(message)
+  const files = message.parts.filter((part) => part.type === "file")
+  return (
+    <Message from="user">
+      {files.length > 0 && (
+        <AttachmentGroup className="justify-end">
+          {files.map((file, index) => (
+            <Attachment key={`${message.id}-${index}`} size="sm">
+              <AttachmentMedia>
+                <FileIcon />
+              </AttachmentMedia>
+              <AttachmentContent>
+                <AttachmentTitle>
+                  {file.filename ?? "Attachment"}
+                </AttachmentTitle>
+                <AttachmentDescription>{file.mediaType}</AttachmentDescription>
+              </AttachmentContent>
+            </Attachment>
+          ))}
+        </AttachmentGroup>
+      )}
+      {text && (
+        <MessageContent className="text-base group-[.is-user]:rounded-md group-[.is-user]:bg-muted group-[.is-user]:px-3 group-[.is-user]:py-2">
+          <p className="whitespace-pre-wrap">{text}</p>
+        </MessageContent>
+      )}
+    </Message>
   )
 }
 
@@ -193,7 +277,7 @@ function BotMessage({
           {bot.name}
         </span>
       </div>
-      <MessageContent className="text-base">{children}</MessageContent>
+      <MessageContent className="gap-3 text-base">{children}</MessageContent>
     </Message>
   )
 }
