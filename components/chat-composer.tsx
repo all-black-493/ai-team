@@ -14,6 +14,8 @@ type ChatComposerProps = {
   placeholder?: string
   // Without it, sending is off: the send button stays disabled.
   onSend?: (message: string) => void
+  // No typing at all, such as while the conversation is loading.
+  disabled?: boolean
 }
 
 // DESIGN.md's composer, measured on arena.ai: a surface fill and hairline
@@ -24,6 +26,7 @@ type ChatComposerProps = {
 export function ChatComposer({
   placeholder = "Ask anything…",
   onSend,
+  disabled,
 }: ChatComposerProps) {
   const [message, setMessage] = useState("")
   const canSend = onSend !== undefined && message.trim().length > 0
@@ -55,6 +58,7 @@ export function ChatComposer({
             }
           }}
           placeholder={placeholder}
+          disabled={disabled}
           aria-label="Message"
           className="max-h-[40vh] min-h-20 p-3 text-base md:text-base"
         />

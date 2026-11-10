@@ -3,8 +3,18 @@
 import "katex/dist/katex.min.css"
 
 import { useChat } from "@ai-sdk/react"
+import type { TriggerChatTransport } from "@trigger.dev/sdk/chat"
+import {
+  useLoadTranscript,
+  useTriggerChatTransport,
+} from "@trigger.dev/sdk/chat/react"
 import type { UIMessage } from "ai"
 
+import {
+  loadChatTranscript,
+  mintChatAccessToken,
+  startChatSession,
+} from "@/actions/chat"
 import {
   Conversation,
   ConversationContent,
@@ -19,6 +29,7 @@ import { Shimmer } from "@/components/ai-elements/shimmer"
 import { ChatAvatar } from "@/components/chat-avatar"
 import { ChatComposer } from "@/components/chat-composer"
 import { Button } from "@/components/ui/button"
+import type { botChat } from "@/trigger/chat"
 
 type ChatBot = { name: string; avatar: string }
 
@@ -34,14 +45,67 @@ function textOf(message: UIMessage) {
     .join("")
 }
 
+export function ChatThread({ chatId, bot, placeholder }: ChatThreadProps) {
+  // Talks to the bot-chat agent on Trigger.dev. Each action checks that the
+  // chat belongs to the signed-in user.
+  const transport = useTriggerChatTransport<typeof botChat>({
+    task: "bot-chat",
+    accessToken: ({ chatId }) => mintChatAccessToken(chatId),
+    startSession: ({ chatId }) => startChatSession(chatId),
+  })
+  // The saved conversation. Passing the transport seeds its resume cursor, so
+  // the live stream opens after this history instead of replaying it.
+  const transcript = useLoadTranscript(chatId, loadChatTranscript, {
+    transport,
+  })
+
+  // useChat mounts once the history is in, so it and the transport start
+  // from the same transcript.
+  if (transcript.isLoading || transcript.error) {
+    return (
+      <>
+        <div className="mx-auto w-full max-w-[800px] flex-1 px-4 py-6">
+          {transcript.error && (
+            <p role="alert" className="text-sm text-muted-foreground">
+              Couldn&apos;t load this chat.
+            </p>
+          )}
+        </div>
+        {/* Typing waits for the conversation: this composer is swapped for
+            the live one when it loads, and would lose its text. */}
+        <DockedComposer placeholder={placeholder} disabled />
+      </>
+    )
+  }
+
+  return (
+    <ChatMessages
+      chatId={chatId}
+      bot={bot}
+      placeholder={placeholder}
+      transport={transport}
+      initialMessages={transcript.messages}
+    />
+  )
+}
+
 // DESIGN.md "Chat conversation": an ~800px thread with the user's messages
 // in raised bubbles on the right and the bot's answers full width under its
 // face and mono name, over the docked composer.
-export function ChatThread({ chatId, bot, placeholder }: ChatThreadProps) {
-  // Posts to /api/chat with this chat's ID. Messages live only here, so a
-  // reload starts the conversation over.
+function ChatMessages({
+  chatId,
+  bot,
+  placeholder,
+  transport,
+  initialMessages,
+}: ChatThreadProps & {
+  transport: TriggerChatTransport
+  initialMessages: UIMessage[]
+}) {
   const { messages, sendMessage, status, error, regenerate } = useChat({
     id: chatId,
+    messages: initialMessages,
+    transport,
   })
   const busy = status === "submitted" || status === "streaming"
 
@@ -95,14 +159,20 @@ export function ChatThread({ chatId, bot, placeholder }: ChatThreadProps) {
         </ConversationContent>
         <ConversationScrollButton />
       </Conversation>
-      <div className="mx-auto w-full max-w-[800px] px-4 pb-4">
-        {/* No sending while the bot is still answering. */}
-        <ChatComposer
-          placeholder={placeholder}
-          onSend={busy ? undefined : (text) => sendMessage({ text })}
-        />
-      </div>
+      {/* No sending while the bot is still answering. */}
+      <DockedComposer
+        placeholder={placeholder}
+        onSend={busy ? undefined : (text) => sendMessage({ text })}
+      />
     </>
+  )
+}
+
+function DockedComposer(props: React.ComponentProps<typeof ChatComposer>) {
+  return (
+    <div className="mx-auto w-full max-w-[800px] px-4 pb-4">
+      <ChatComposer {...props} />
+    </div>
   )
 }
 
