@@ -163,6 +163,42 @@
       "skillPath": "skills/shadcn/SKILL.md",
       "computedHash": "b864a958765563321f485a96f4d59c0bb6539f4286ab6d8b8b66895b7ebd302d"
     },
+    "trigger-authoring-chat-agent": {
+      "source": "triggerdotdev/skills",
+      "sourceType": "github",
+      "skillPath": "trigger-authoring-chat-agent/SKILL.md",
+      "computedHash": "10482cdca02ae64f5d32f4f3c9d24afdfd56e1445e52ae88a5161866f33d5dee"
+    },
+    "trigger-chat-agent-advanced": {
+      "source": "triggerdotdev/skills",
+      "sourceType": "github",
+      "skillPath": "trigger-chat-agent-advanced/SKILL.md",
+      "computedHash": "b94803743b4fd38001d31641a02c9402f6f567778096eaf0895355f1c2722a13"
+    },
+    "trigger-cost-savings": {
+      "source": "triggerdotdev/skills",
+      "sourceType": "github",
+      "skillPath": "trigger-cost-savings/SKILL.md",
+      "computedHash": "043526d3b0301c0ce06bc76b6575626c32a3673fd103aefeee8b035ed09bc0f5"
+    },
+    "trigger-realtime": {
+      "source": "triggerdotdev/skills",
+      "sourceType": "github",
+      "skillPath": "trigger-realtime/SKILL.md",
+      "computedHash": "6b458605a5d696868d1db725a56c4994f7b624618b3bf368b96ad7d3a028e928"
+    },
+    "trigger-setup": {
+      "source": "triggerdotdev/skills",
+      "sourceType": "github",
+      "skillPath": "trigger-setup/SKILL.md",
+      "computedHash": "be7643368ce37062de4a2d3a5d379814bc131319eb1f9fafb6a5ab4294fcfc13"
+    },
+    "trigger-tasks": {
+      "source": "triggerdotdev/skills",
+      "sourceType": "github",
+      "skillPath": "trigger-tasks/SKILL.md",
+      "computedHash": "fc5371f0356358a13a07b8d5f72f7e537002d4b0c50f3d2dacd57d10a2163cfa"
+    },
     "vercel-cli-with-tokens": {
       "source": "vercel-labs/agent-skills",
       "sourceType": "github",

@@ -3,6 +3,14 @@
 @import "shadcn/tailwind.css";
 @import "@clerk/ui/themes/shadcn.css";
 
+/* Streamdown renders the bot's Markdown (AI Elements' MessageResponse) with
+   Tailwind classes that live in node_modules; let Tailwind see them. */
+@source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/code/dist/*.js";
+@source "../node_modules/@streamdown/cjk/dist/*.js";
+@source "../node_modules/@streamdown/math/dist/*.js";
+@source "../node_modules/@streamdown/mermaid/dist/*.js";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

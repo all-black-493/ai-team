@@ -41,3 +41,5 @@ next-env.d.ts
 
 # Firecrawl captures of third-party sites (local evidence for DESIGN.md)
 .firecrawl/
+
+.trigger

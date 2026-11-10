@@ -2,8 +2,8 @@ import { notFound } from "next/navigation"
 import { auth } from "@clerk/nextjs/server"
 
 import { getChat } from "@/chats/queries"
-import { ChatComposer } from "@/components/chat-composer"
 import { ChatHeader } from "@/components/chat-header"
+import { ChatThread } from "@/components/chat-thread"
 
 export default async function Page({
   params,
@@ -18,14 +18,17 @@ export default async function Page({
   if (!chat) notFound()
 
   return (
-    <div className="flex flex-1 flex-col">
+    // A fixed height, so the thread scrolls inside it and the composer stays
+    // docked. On phones the layout's 48px top bar sits above it.
+    <div className="flex h-[calc(100svh-3rem)] flex-col md:h-svh">
       <ChatHeader chat={chat} />
-      {/* The message list goes here. */}
-      <div className="flex-1" />
-      {/* DESIGN.md: the composer docks under an ~800px thread column. */}
-      <div className="mx-auto w-full max-w-[800px] px-4 pb-4">
-        <ChatComposer placeholder={`Message ${chat.title}…`} />
-      </div>
+      <ChatThread
+        // A fresh conversation for each chat.
+        key={chat.id}
+        chatId={chat.id}
+        bot={{ name: chat.title, avatar: chat.bot?.avatar ?? chat.id }}
+        placeholder={`Message ${chat.title}…`}
+      />
     </div>
   )
 }
