@@ -23,10 +23,19 @@ import {
   PromptInputSelectValue,
 } from "@/components/ai-elements/prompt-input"
 import { ChatAvatar } from "@/components/chat-avatar"
+import { RoleBadge, SuspendedBadge } from "@/components/role-badge"
 import { InputGroupButton } from "@/components/ui/input-group"
+import type { RoleKind } from "@/lib/governance"
 import { getModel, MODELS, PROVIDER_NAMES } from "@/lib/models"
 
-type PickerBot = { id: string; name: string; avatar: string }
+type PickerBot = {
+  id: string
+  name: string
+  avatar: string
+  // In a group: the bot's role, and whether it's suspended.
+  role?: { kind: RoleKind; name: string }
+  suspended?: boolean
+}
 
 function BotLabel({ bot }: { bot: PickerBot }) {
   return (
@@ -73,10 +82,20 @@ export function BotPicker({
         side="top"
         align="start"
         alignItemWithTrigger={false}
+        className="w-auto min-w-(--anchor-width)"
       >
+        {/* A suspended bot can't take part until its suspension ends. */}
         {bots.map((bot) => (
-          <PromptInputSelectItem key={bot.id} value={bot.id}>
+          <PromptInputSelectItem
+            key={bot.id}
+            value={bot.id}
+            disabled={bot.suspended}
+          >
             <BotLabel bot={bot} />
+            {bot.role && (
+              <RoleBadge plain kind={bot.role.kind} name={bot.role.name} />
+            )}
+            {bot.suspended && <SuspendedBadge />}
           </PromptInputSelectItem>
         ))}
       </PromptInputSelectContent>

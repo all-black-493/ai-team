@@ -46,12 +46,14 @@ export const getUserChats = cache(async () => {
 export type UserChat = Awaited<ReturnType<typeof getUserChats>>[number]
 
 // The signed-in user's bots, oldest first, for picking a group's members.
+// Not the bots a group owns, such as its moderator.
 export const getUserBots = cache(async () => {
   const { isAuthenticated, userId } = await auth()
   if (!isAuthenticated) return []
 
   return db.query.bots.findMany({
-    where: (bots, { eq }) => eq(bots.userId, userId),
+    where: (bots, { and, eq, isNull }) =>
+      and(eq(bots.userId, userId), isNull(bots.groupChatId)),
     orderBy: (bots, { asc }) => [asc(bots.createdAt)],
     columns: { id: true, name: true, avatar: true },
   })

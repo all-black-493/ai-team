@@ -1,9 +1,10 @@
 import { notFound } from "next/navigation"
 import { auth } from "@clerk/nextjs/server"
 
-import { getChat, getChatRatings } from "@/chats/queries"
+import { getChat, getChatRatings, getGroupOverview } from "@/chats/queries"
 import { ChatThread } from "@/components/chat-thread"
 import { DesktopPanel, DesktopPanelProvider } from "@/components/desktop-panel"
+import { getUserBots } from "@/queries/bot"
 
 export default async function Page({
   params,
@@ -17,6 +18,11 @@ export default async function Page({
   // Missing, or another user's: both look the same.
   if (!chat) notFound()
   const ratings = await getChatRatings(chat.id)
+  // A group's settings pick from the user's bots. Not awaited: only the
+  // dialog reads it, so the page doesn't wait for it.
+  const bots = chat.kind === "group" ? getUserBots() : undefined
+  // How a group governs itself: roles, standing, flags, tasks.
+  const overview = await getGroupOverview(chat.id)
 
   const content = (
     // A fixed height, so the thread scrolls inside it and the composer stays
@@ -28,6 +34,8 @@ export default async function Page({
         // A fresh conversation for each chat.
         key={chat.id}
         chat={chat}
+        bots={bots}
+        overview={overview}
         ratings={ratings}
       />
     </div>

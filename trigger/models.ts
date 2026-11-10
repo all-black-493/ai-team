@@ -28,6 +28,16 @@ const google = createGoogleGenerativeAI({
   headers: { Authorization: `Bearer ${token}` },
 })
 
+// Options a model needs on every call. The gateway doesn't store OpenAI
+// responses, so earlier answers can't go back as references to stored items
+// (the provider's default, which the gateway rejects): each turn sends the
+// whole conversation, its reasoning included as encrypted content.
+export function modelProviderOptions(id: string | null | undefined) {
+  return getModel(id).provider === "openai"
+    ? { openai: { store: false, include: ["reasoning.encrypted_content"] } }
+    : undefined
+}
+
 // The language model for a bot's model ID, or the default model for an ID
 // that's no longer offered.
 export function languageModel(id: string | null | undefined) {

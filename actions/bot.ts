@@ -5,7 +5,6 @@ import { and, eq, inArray } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
-import { groupChatSchema, type GroupChatInput } from "@/chats/group"
 import { db } from "@/db"
 import {
   botInsertSchema,
@@ -117,49 +116,6 @@ export async function setBotModel(botId: string, model: string) {
   if (!bot) {
     throw new Error("Bot not found")
   }
-}
-
-// A named chat with two or more of the user's bots. Returns its ID, to open
-// it.
-export async function createGroupChat(input: GroupChatInput) {
-  const { isAuthenticated, userId } = await auth()
-  if (!isAuthenticated) {
-    throw new Error("Unauthorized")
-  }
-
-  const { name, botIds } = groupChatSchema.parse(input)
-
-  const chatId = await db.transaction(async (tx) => {
-    // Only the user's own bots: any other ID matches no row.
-    const owned = await tx
-      .select({ id: bots.id })
-      .from(bots)
-      .where(and(eq(bots.userId, userId), inArray(bots.id, botIds)))
-    if (owned.length !== botIds.length) {
-      throw new Error("Bot not found")
-    }
-
-    const [chat] = await tx
-      .insert(chats)
-      .values({ userId, kind: "group", name })
-      .returning({ id: chats.id })
-
-    // A millisecond apart, so the members keep the order they were picked
-    // in: chats list them by when they joined.
-    const joinedAt = Date.now()
-    await tx.insert(chatMembers).values(
-      botIds.map((botId, index) => ({
-        chatId: chat.id,
-        botId,
-        joinedAt: new Date(joinedAt + index),
-      }))
-    )
-
-    return chat.id
-  })
-
-  revalidatePath("/", "layout")
-  return chatId
 }
 
 export async function deleteBot(botId: string) {

@@ -4,6 +4,7 @@ import { useState } from "react"
 import {
   CheckIcon,
   CopyIcon,
+  FlagIcon,
   RefreshCwIcon,
   ReplyIcon,
   Share2Icon,
@@ -22,19 +23,21 @@ type MessageToolbarProps = {
   rating?: MessageRating | null
   onRate?: (rating: MessageRating | null) => void
   onRegenerate?: () => void
-  // Replying is for answers in group chats.
+  // Replying and flagging are for answers in group chats.
   onReply?: () => void
+  onFlag?: () => void
   className?: string
 }
 
 // What you can do with a message: copy it, share it, rate an answer, reply
-// to it, or have the bot answer again.
+// to it, flag it, or have the bot answer again.
 export function MessageToolbar({
   text,
   rating,
   onRate,
   onRegenerate,
   onReply,
+  onFlag,
   className,
 }: MessageToolbarProps) {
   const [copied, setCopied] = useState(false)
@@ -112,6 +115,11 @@ export function MessageToolbar({
       <MessageAction tooltip="Share" size="icon-xs" onClick={share}>
         <Share2Icon />
       </MessageAction>
+      {onFlag && (
+        <MessageAction tooltip="Flag" size="icon-xs" onClick={onFlag}>
+          <FlagIcon />
+        </MessageAction>
+      )}
       {onRegenerate && (
         <MessageAction
           tooltip="Regenerate"

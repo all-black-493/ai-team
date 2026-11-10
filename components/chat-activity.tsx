@@ -21,31 +21,46 @@ import {
   FileTextIcon,
   FolderInputIcon,
   FolderOpenIcon,
+  FlagIcon,
   FolderPlusIcon,
   ForwardIcon,
+  GavelIcon,
   GitBranchIcon,
   GitCommitIcon,
   GitPullRequestArrowIcon,
   GlobeIcon,
   ImageIcon,
   KeyboardIcon,
+  LandmarkIcon,
   LinkIcon,
+  ListChecksIcon,
+  ListPlusIcon,
   MonitorIcon,
   MousePointerClickIcon,
   MoveIcon,
+  NotebookPenIcon,
+  PencilIcon,
   PlugIcon,
+  ScaleIcon,
   ScrollTextIcon,
   SearchIcon,
+  ShieldIcon,
+  ShieldMinusIcon,
+  ShieldPlusIcon,
   SquareIcon,
   TerminalIcon,
   TextSearchIcon,
   Trash2Icon,
+  UserCogIcon,
+  UserMinusIcon,
+  UserPlusIcon,
   WrenchIcon,
   type LucideIcon,
 } from "lucide-react"
 
 import { Image } from "@/components/ai-elements/image"
 import { MessageResponse } from "@/components/ai-elements/message"
+import { MODERATION_ACTIONS, PERMISSIONS } from "@/lib/governance"
 import {
   Terminal,
   TerminalActions,
@@ -114,6 +129,18 @@ type ToolMeta = {
 }
 
 const commandOutput = (output: unknown) => field(output, "output") || undefined
+
+// A role's permissions, one per line, as the user reads them.
+function permissionList(input: unknown) {
+  const permissions = (input as { permissions?: string[] } | undefined)
+    ?.permissions
+  return permissions
+    ?.map(
+      (permission) =>
+        PERMISSIONS[permission as keyof typeof PERMISSIONS] ?? permission
+    )
+    .join("\n")
+}
 
 const toolMeta: Record<string, ToolMeta> = {
   run_command: {
@@ -351,6 +378,104 @@ const toolMeta: Record<string, ToolMeta> = {
     verbs: ["Handing off to", "Handed off to", "Couldn't hand off to"],
     subject: (input) => field(input, "to"),
     description: (input) => shorten(field(input, "reason"), 80),
+  },
+  // An admin bot changing its group chat.
+  add_group_member: {
+    icon: UserPlusIcon,
+    verbs: ["Adding", "Added", "Couldn't add"],
+    subject: (input) => `${field(input, "name")} to the group`,
+  },
+  remove_group_member: {
+    icon: UserMinusIcon,
+    verbs: ["Removing", "Removed", "Couldn't remove"],
+    subject: (input) => `${field(input, "name")} from the group`,
+  },
+  rename_group: {
+    icon: PencilIcon,
+    verbs: ["Renaming", "Renamed", "Couldn't rename"],
+    subject: (input) => `the group to “${field(input, "name")}”`,
+  },
+  // A group governing itself (trigger/group-tools.ts).
+  create_role: {
+    icon: ShieldPlusIcon,
+    verbs: ["Creating", "Created", "Couldn't create"],
+    subject: (input) => `the ${field(input, "name")} role`,
+    detail: (_output, input) => permissionList(input),
+  },
+  update_role: {
+    icon: ShieldIcon,
+    verbs: ["Changing", "Changed", "Couldn't change"],
+    subject: (input) => `the ${field(input, "role")} role`,
+    detail: (_output, input) => permissionList(input),
+  },
+  delete_role: {
+    icon: ShieldMinusIcon,
+    verbs: ["Deleting", "Deleted", "Couldn't delete"],
+    subject: (input) => `the ${field(input, "role")} role`,
+  },
+  assign_role: {
+    icon: UserCogIcon,
+    verbs: ["Making", "Made", "Couldn't make"],
+    subject: (input) => `${field(input, "bot")} ${field(input, "role")}`,
+  },
+  set_constitution: {
+    icon: LandmarkIcon,
+    verbs: ["Writing", "Wrote", "Couldn't write"],
+    subject: () => "the constitution",
+    detail: (_output, input) => field(input, "text"),
+  },
+  // Only that it changed: the shared memory is for the bots, not the page.
+  update_group_memory: {
+    icon: NotebookPenIcon,
+    verbs: ["Updating", "Updated", "Couldn't update"],
+    subject: () => "the shared memory",
+  },
+  propose_task: {
+    icon: ListPlusIcon,
+    verbs: ["Proposing", "Proposed", "Couldn't propose"],
+    subject: (input) => `“${shorten(field(input, "title"), 50)}”`,
+    description: (input) =>
+      field(input, "assignee") && `for ${field(input, "assignee")}`,
+  },
+  update_task: {
+    icon: ListChecksIcon,
+    verbs: ["Updating", "Updated", "Couldn't update"],
+    subject: (input) => `task ${field(input, "task")}`,
+    description: (input) => field(input, "status")?.replace("_", " "),
+  },
+  flag_message: {
+    icon: FlagIcon,
+    verbs: ["Flagging", "Flagged", "Couldn't flag"],
+    subject: (input) => `message ${field(input, "message")}`,
+    description: (input) => shorten(field(input, "reason"), 80),
+  },
+  answer_flag: {
+    icon: ScaleIcon,
+    verbs: ["Answering", "Answered", "Couldn't answer"],
+    subject: () => "the flag",
+    detail: (_output, input) =>
+      [
+        ["Explanation", field(input, "explanation")],
+        ["Challenge", field(input, "challenge")],
+        ["Evidence", field(input, "evidence")],
+        ["Request", field(input, "request")],
+      ]
+        .filter(([, text]) => text)
+        .map(([label, text]) => `${label}: ${text}`)
+        .join("\n\n"),
+  },
+  moderate: {
+    icon: GavelIcon,
+    verbs: ["Deciding", "Decided", "Couldn't decide"],
+    subject: (input) => `the flag on ${field(input, "message")}`,
+    description: (input) => {
+      const decision = field(input, "decision")
+      return decision === "dismiss"
+        ? "Dismissed"
+        : (MODERATION_ACTIONS[decision as keyof typeof MODERATION_ACTIONS] ??
+            decision)
+    },
+    detail: (_output, input) => field(input, "reason"),
   },
   mcp_call_tool: {
     icon: PlugIcon,

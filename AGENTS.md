@@ -26,17 +26,9 @@ This is a development project. There is no backwards compatibility and the data 
 - Apply schema changes only with `npm run db:push` (`drizzle-kit push`).
 - Never use migrations: do not run `drizzle-kit generate` or `drizzle-kit migrate`, and do not create migration files or a `drizzle/` folder.
 
-## Deployment
-
-<!-- The app is deployed on Railway (project and service `ai-teammates`, environment `production`).
-
-- When code starts reading a new environment variable, add it to the Railway service too, with the value from `.env.local`.
-- The chat agent and the other tasks in `trigger/` run on Trigger.dev, not Railway, and see only the variables set there. When code they run starts reading a new environment variable (in `trigger/` or anything it imports, such as `lib/` and `db/`), add it to the Trigger.dev project's production environment as well, with the value from `.env.local`.
-- `TRIGGER_SECRET_KEY` is the exception: `.env.local` holds the Trigger.dev development key and Railway holds the production key. They are meant to differ, so never copy it from `.env.local` to Railway or report the mismatch as a problem. -->
-
 ## Forms
 
-<!-- Reference implementation: `db/schema.ts` (`botInsertSchema`), `actions/bot.ts` (`createBot`), `components/bot-dialog.tsx`.
+Reference implementation: `db/schema.ts` (`botInsertSchema`), `actions/bot.ts` (`createBot`), `components/bot-dialog.tsx`.
 
 Schema
 
@@ -68,7 +60,7 @@ Forms in dialogs
 
 Dependencies
 
-- `zod` must stay on v4. If `npm install` fails with a peer conflict from `@hookform/resolvers`, pin `zod@^4` in the same install command rather than using `--force` or `--legacy-peer-deps`. -->
+- `zod` must stay on v4. If `npm install` fails with a peer conflict from `@hookform/resolvers`, pin `zod@^4` in the same install command rather than using `--force` or `--legacy-peer-deps`.
 
 ## DiceBear
 
@@ -116,5 +108,5 @@ Dart or C# API attributed to DiceBear is invented rather than outdated.
 <!-- TRIGGER.DEV SKILLS START -->
 ## Trigger.dev agent skills
 
-<!-- This project has Trigger.dev agent skills installed in `.agents/skills/`. Before writing or changing Trigger.dev code (background tasks, scheduled tasks, realtime, or chat.agent AI agents), load the most relevant skill: `trigger-authoring-chat-agent`, `trigger-authoring-tasks`, `trigger-chat-agent-advanced`, `trigger-cost-savings`, `trigger-getting-started`, `trigger-realtime-and-frontend`.
-TRIGGER.DEV SKILLS END -->
+This project has Trigger.dev agent skills installed in `.agents/skills/`. Before writing or changing Trigger.dev code (background tasks, scheduled tasks, realtime, or chat.agent AI agents), load the most relevant skill: `trigger-authoring-chat-agent`, `trigger-authoring-tasks`, `trigger-chat-agent-advanced`, `trigger-cost-savings`, `trigger-getting-started`, `trigger-realtime-and-frontend`.
+<!-- TRIGGER.DEV SKILLS END -->

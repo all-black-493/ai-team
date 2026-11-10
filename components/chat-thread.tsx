@@ -3,6 +3,7 @@
 import "katex/dist/katex.min.css"
 
 import { useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import { useChat } from "@ai-sdk/react"
 import type { TriggerChatTransport } from "@trigger.dev/sdk/chat"
 import {
@@ -11,7 +12,7 @@ import {
 } from "@trigger.dev/sdk/chat/react"
 import { upload } from "@vercel/blob/client"
 import { readUIMessageStream, type FileUIPart, type UIMessage } from "ai"
-import { FileIcon, ReplyIcon, XIcon } from "lucide-react"
+import { FileIcon, FlagIcon, ReplyIcon, XIcon } from "lucide-react"
 
 import { setBotModel } from "@/actions/bot"
 import {
@@ -35,6 +36,11 @@ import { AssistantParts, hasVisibleParts } from "@/components/chat-activity"
 import { ChatAvatar } from "@/components/chat-avatar"
 import { ChatComposer, type ComposerMessage } from "@/components/chat-composer"
 import { ChatHeader } from "@/components/chat-header"
+import {
+  FlagMessageDialog,
+  type FlaggedMessage,
+} from "@/components/flag-message-dialog"
+import { RoleBadge, SuspendedBadge } from "@/components/role-badge"
 import { MessageToolbar } from "@/components/chat-message-actions"
 import { BotPicker, ModelPicker } from "@/components/chat-pickers"
 import { ChatUsage } from "@/components/chat-usage"
@@ -47,6 +53,7 @@ import {
   AttachmentMedia,
   AttachmentTitle,
 } from "@/components/ui/attachment"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { InputGroupButton } from "@/components/ui/input-group"
 import { toast } from "@/components/ui/toast"
@@ -55,9 +62,16 @@ import {
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_LABEL,
 } from "@/chats/attachments"
-import { handoffOf, type Handoff } from "@/chats/handoff"
-import type { ChatWithBot } from "@/chats/queries"
+import { changedGroup, needsFollowUp } from "@/chats/group"
+import { handoffOf } from "@/chats/handoff"
+import type { ChatWithBot, GroupOverview } from "@/chats/queries"
 import type { MessageRating } from "@/db/schema"
+import type { UserBot } from "@/queries/bot"
+import {
+  FLAG_STATUS_LABELS,
+  MODERATION_ACTIONS,
+  type RoleKind,
+} from "@/lib/governance"
 import { cn } from "@/lib/utils"
 import type { BotMessageMetadata, BotUIMessage, botChat } from "@/trigger/chat"
 
@@ -73,6 +87,11 @@ type ChatThreadProps = {
   // In a group, the user picks which bot answers each message and can reply
   // to an answer, and bots can hand a message to each other.
   chat: ChatWithBot
+  // The user's bots, for a group's settings to pick from.
+  bots?: Promise<UserBot[]>
+  // How a group governs itself: its bots' roles and standing, flags and the
+  // moderation record. Null for a direct chat.
+  overview?: GroupOverview | null
   // The user's saved ratings of the chat's answers, by message ID.
   ratings: Record<string, MessageRating>
 }
@@ -92,6 +111,10 @@ function textOf(message: UIMessage) {
     .map((part) => (part.type === "text" ? part.text : ""))
     .join("")
 }
+
+// The most turns the chat runs on its own in a row, such as a flag's
+// response and review: a guard against bots handing a message round.
+const MAX_AUTOMATIC_TURNS = 4
 
 // Where a message is in the page, for a reply to jump back to it.
 const anchorOf = (messageId: string) => `message-${messageId}`
@@ -116,7 +139,7 @@ const suggestions = {
 
 // The chat's header and conversation. The header is here, not on the page,
 // so it can offer the conversation as a download.
-export function ChatThread({ chat, ratings }: ChatThreadProps) {
+export function ChatThread({ chat, bots, overview, ratings }: ChatThreadProps) {
   const chatId = chat.id
   // Talks to the bot-chat agent on Trigger.dev. Each action checks that the
   // chat belongs to the signed-in user.
@@ -136,7 +159,7 @@ export function ChatThread({ chat, ratings }: ChatThreadProps) {
   if (transcript.isLoading || transcript.error) {
     return (
       <>
-        <ChatHeader chat={chat} />
+        <ChatHeader chat={chat} bots={bots} overview={overview} />
         <div className="mx-auto w-full max-w-[800px] flex-1 px-4 py-6">
           {transcript.error && (
             <p role="alert" className="text-sm text-muted-foreground">
@@ -157,6 +180,8 @@ export function ChatThread({ chat, ratings }: ChatThreadProps) {
   return (
     <ChatMessages
       chat={chat}
+      bots={bots}
+      overview={overview}
       ratings={ratings}
       transport={transport}
       initialMessages={transcript.messages as BotUIMessage[]}
@@ -169,6 +194,8 @@ export function ChatThread({ chat, ratings }: ChatThreadProps) {
 // face and mono name, over the docked composer.
 function ChatMessages({
   chat,
+  bots,
+  overview,
   ratings: initialRatings,
   transport,
   initialMessages,
@@ -179,6 +206,7 @@ function ChatMessages({
   const chatId = chat.id
   const group = chat.kind === "group"
   const members: ThreadBot[] = chat.members
+  const router = useRouter()
   const {
     messages,
     setMessages,
@@ -191,36 +219,53 @@ function ChatMessages({
     id: chatId,
     messages: initialMessages,
     transport,
-    // A bot that handed the message off is followed at once by the bot it
-    // handed it to. Only answers that finish here: a stopped or broken one
-    // doesn't hand off.
+    // An answer that leaves another bot's turn due, such as a handoff or a
+    // flag, is followed at once by that turn. Only answers that finish here:
+    // a stopped or broken one doesn't carry on.
     onFinish: ({ message, isAbort, isDisconnect, isError }) => {
-      const handoff = handoffOf(message)
-      if (handoff && !isAbort && !isDisconnect && !isError) {
-        void handOff(message.id, handoff)
+      // A bot changed the group: load it again, for the header, the badges,
+      // the bot picker and the sidebar.
+      if (changedGroup(message)) router.refresh()
+      if (needsFollowUp(message) && !isAbort && !isDisconnect && !isError) {
+        void carryOn(message.id, handoffOf(message)?.botId)
       }
     },
   })
   const answering = status === "submitted" || status === "streaming"
 
-  // A handoff being answered: the message that handed off, and how to stop
-  // the answer. And whether the last one failed.
-  const [handoff, setHandoff] = useState<{
-    fromId: string
+  // Turns the chat runs on its own, in progress: the last message before
+  // the one coming in, and how to stop it. And whether the last run failed.
+  const [auto, setAuto] = useState<{
+    fromId: string | undefined
     controller: AbortController
   } | null>(null)
-  const [handoffFailed, setHandoffFailed] = useState(false)
-  const busy = answering || handoff !== null
+  const [autoFailed, setAutoFailed] = useState(false)
+  const busy = answering || auto !== null
 
   const last = messages.at(-1)
-  // The answer coming in, once it has started: a handoff's is the one after
-  // the message that handed off.
+  // The answer coming in, once it has started: an automatic turn's is the
+  // one after the message it follows.
   const incoming =
-    answering || (handoff && last?.id !== handoff.fromId) ? last : undefined
+    answering || (auto && last?.id !== auto.fromId) ? last : undefined
   const thinking =
     busy && !(incoming?.role === "assistant" && hasVisibleParts(incoming))
-  // A handoff nobody has answered, such as one cut off by a reload.
-  const unanswered = busy ? undefined : handoffOf(last)
+
+  // Each bot's role and standing in a group, and the latest flag on each
+  // message, with what was decided.
+  const standing = new Map(
+    overview?.members.map((member) => [member.id, member]) ?? []
+  )
+  const flagOf = (messageId: string) =>
+    overview?.flags.findLast((flag) => flag.messageId === messageId)
+  const openFlag = overview?.flags.find(
+    (flag) =>
+      flag.status === "awaiting_response" || flag.status === "awaiting_review"
+  )
+  // A turn still due that nothing is running, such as one cut off by a
+  // reload: an unanswered handoff, or a flag waiting for its bot or a
+  // moderator.
+  const due = busy ? undefined : (handoffOf(last) ?? openFlag)
+  const [flagging, setFlagging] = useState<FlaggedMessage | null>(null)
   const [ratings, setRatings] = useState(initialRatings)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -252,9 +297,13 @@ function ChatMessages({
       : members[0]?.id
   })
   const bot = (botId && membersById.get(botId)) || members[0]
-  // Who the answer in progress is from, for the thinking row.
-  const [askedBotId, setAskedBotId] = useState(botId)
-  const askedBot = (askedBotId && membersById.get(askedBotId)) || bot
+  // Who the answer in progress is from, for the thinking row: null while an
+  // automatic turn hasn't said yet.
+  const [askedBotId, setAskedBotId] = useState<string | null | undefined>(botId)
+  const askedBot =
+    askedBotId === null
+      ? undefined
+      : (askedBotId && membersById.get(askedBotId)) || bot
 
   // The answer the next message replies to, in a group.
   const [replyId, setReplyId] = useState<string | null>(null)
@@ -382,49 +431,65 @@ function ChatMessages({
     if (author) answerAgain(latest.id, author.id)
   }
 
-  // The bot a handoff names answers it in a turn of its own, which the chat
-  // asks the agent for as an action. Sent through useChat, its answer would
-  // be folded into the message that handed off, as if that bot carried on,
-  // so the stream is read here and the answer added as a message of its own.
-  async function handOff(fromId: string, { botId }: Handoff) {
-    // A bot removed from the group since can't answer.
-    if (!membersById.has(botId)) return
+  // Runs the turns the chat runs on its own, one after another, until none
+  // is due: a handoff's answer, a flagged bot's response, a moderator's
+  // review. Each is asked of the agent as an action, which runs whichever
+  // turn is due. Sent through useChat, its answer would be folded into the
+  // message before it, as if that bot carried on, so the stream is read here
+  // and the answer added as a message of its own. `botId`, when known, is
+  // the first turn's bot.
+  async function carryOn(fromId: string | undefined, botId?: string) {
     const controller = new AbortController()
-    setAskedBotId(botId)
-    // The conversation carries on with the bot it was handed to.
-    setBotId(botId)
-    setHandoff({ fromId, controller })
-    setHandoffFailed(false)
+    setAskedBotId(botId && membersById.has(botId) ? botId : null)
+    // After a handoff, the conversation carries on with that bot.
+    if (botId && membersById.has(botId)) setBotId(botId)
+    setAuto({ fromId, controller })
+    setAutoFailed(false)
     try {
-      const stream = await transport.sendAction(
-        chatId,
-        { type: "handoff" },
-        { abortSignal: controller.signal, metadata: { botId } }
-      )
-      for await (const answer of readUIMessageStream<BotUIMessage>({
-        stream,
-        terminateOnError: true,
-      })) {
-        setMessages((current) => {
-          const index = current.findIndex((message) => message.id === answer.id)
-          return index === -1
-            ? [...current, answer]
-            : current.with(index, answer)
-        })
+      for (let turn = 0; turn < MAX_AUTOMATIC_TURNS; turn++) {
+        const stream = await transport.sendAction(
+          chatId,
+          { type: "continue" },
+          { abortSignal: controller.signal, metadata: { auto: true } }
+        )
+        let answered: BotUIMessage | undefined
+        for await (const answer of readUIMessageStream<BotUIMessage>({
+          stream,
+          terminateOnError: true,
+        })) {
+          answered = answer
+          if (answer.metadata?.botId) setAskedBotId(answer.metadata.botId)
+          setMessages((current) => {
+            const index = current.findIndex(
+              (message) => message.id === answer.id
+            )
+            return index === -1
+              ? [...current, answer]
+              : current.with(index, answer)
+          })
+        }
+        // No turn was due.
+        if (!answered) break
+        const answer = answered
+        setAuto((current) => current && { ...current, fromId: answer.id })
+        setAskedBotId(null)
+        if (!needsFollowUp(answer)) break
       }
     } catch {
-      if (!controller.signal.aborted) setHandoffFailed(true)
+      if (!controller.signal.aborted) setAutoFailed(true)
     } finally {
-      setHandoff(null)
+      setAuto(null)
+      // Flags, roles or standing may have changed along the way.
+      router.refresh()
     }
   }
 
   // useChat's stop only ends the local stream; the agent needs telling too,
-  // or it keeps going after a reload. A handoff's answer stops with its
+  // or it keeps going after a reload. An automatic turn stops with its
   // stream.
   function stopAnswer() {
-    if (handoff) {
-      handoff.controller.abort()
+    if (auto) {
+      auto.controller.abort()
     } else {
       void stop()
     }
@@ -442,12 +507,21 @@ function ChatMessages({
 
   const replyAuthor = replyMessage && authorOf(replyMessage)
 
-  const unansweredBot = unanswered && membersById.get(unanswered.botId)
+  // What the due turn is waiting for, in words.
+  const dueText = !due
+    ? undefined
+    : "status" in due
+      ? due.status === "awaiting_response"
+        ? `${membersById.get(due.botId)?.name ?? "A bot"} hasn't answered its flag yet.`
+        : "A moderator hasn't reviewed a flag yet."
+      : `${membersById.get(due.botId)?.name ?? "A bot"} hasn't answered yet.`
 
   return (
     <>
       <ChatHeader
         chat={chat}
+        bots={bots}
+        overview={overview}
         actions={
           messages.length > 0 && (
             <ConversationDownload
@@ -517,11 +591,26 @@ function ChatMessages({
             const streaming = busy && message.id === incoming?.id
             // A removed bot can't be asked again.
             const canAsk = author !== undefined && membersById.has(author.id)
+            const flag = flagOf(message.id)
+            const flagOpen =
+              flag?.status === "awaiting_response" ||
+              flag?.status === "awaiting_review"
             return (
               <BotMessage
                 key={message.id}
                 id={anchorOf(message.id)}
                 bot={author}
+                standing={author && standing.get(author.id)}
+                flag={
+                  flag && {
+                    label:
+                      flag.status === "resolved"
+                        ? (overview?.actions.find(
+                            (action) => action.flagId === flag.id
+                          )?.action ?? "resolved")
+                        : flag.status,
+                  }
+                }
               >
                 <AssistantParts message={message} streaming={streaming} />
                 {!streaming && (
@@ -531,6 +620,18 @@ function ChatMessages({
                     onRate={(rating) => rate(message.id, rating)}
                     onReply={
                       group && canAsk ? () => replyTo(message) : undefined
+                    }
+                    // A bot's answer in a group, once, while it's in it.
+                    onFlag={
+                      group && canAsk && !flagOpen && !busy
+                        ? () =>
+                            setFlagging({
+                              id: message.id,
+                              botId: author.id,
+                              botName: author.name,
+                              text: textOf(message),
+                            })
+                        : undefined
                     }
                     // Only the latest answer: an earlier one would drop
                     // everything said after it.
@@ -550,20 +651,18 @@ function ChatMessages({
               <Shimmer>Thinking…</Shimmer>
             </BotMessage>
           )}
-          {unansweredBot && !error && (
+          {(due || autoFailed) && !busy && !error && (
             <div
-              role={handoffFailed ? "alert" : undefined}
+              role={autoFailed ? "alert" : undefined}
               className="flex items-center gap-3 text-sm text-muted-foreground"
             >
-              {handoffFailed
-                ? "Something went wrong."
-                : `${unansweredBot.name} hasn't answered yet.`}
+              {autoFailed ? "Something went wrong." : dueText}
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => last && handOff(last.id, unanswered!)}
+                onClick={() => carryOn(last?.id)}
               >
-                {handoffFailed ? "Try again" : `Ask ${unansweredBot.name}`}
+                {autoFailed ? "Try again" : "Carry on"}
               </Button>
             </div>
           )}
@@ -602,7 +701,11 @@ function ChatMessages({
           <>
             {group && bot && (
               <BotPicker
-                bots={members}
+                bots={members.map((member) => ({
+                  ...member,
+                  role: standing.get(member.id)?.role,
+                  suspended: Boolean(standing.get(member.id)?.suspendedUntil),
+                }))}
                 value={bot.id}
                 onValueChange={setBotId}
               />
@@ -617,6 +720,12 @@ function ChatMessages({
             <ChatUsage messages={messages} />
           </>
         }
+      />
+      <FlagMessageDialog
+        chatId={chatId}
+        message={flagging}
+        onOpenChange={(open) => !open && setFlagging(null)}
+        onFlagged={(flag) => carryOn(last?.id, flag.botId)}
       />
     </>
   )
@@ -762,27 +871,60 @@ function DockedComposer(props: React.ComponentProps<typeof ChatComposer>) {
 }
 
 // In place of Arena's "Assistant A" label: the bot's face and its name in
-// the mono face, then the answer at 16/24.
+// the mono face, then the answer at 16/24. In a group, small badges beside
+// the name show the bot's role, a suspension, and a flag on this message
+// with where it stands or what was decided.
 function BotMessage({
   bot,
   id,
+  standing,
+  flag,
   children,
 }: {
   bot: ThreadBot | undefined
   id?: string
+  standing?: {
+    role: { kind: RoleKind; name: string }
+    suspendedUntil: Date | null
+  }
+  flag?: { label: string }
   children: React.ReactNode
 }) {
   return (
     <Message from="assistant" id={id}>
       {bot && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <ChatAvatar seed={bot.avatar} className="size-5 rounded-sm" />
           <span className="font-mono text-xs text-accent-foreground">
             {bot.name}
           </span>
+          {standing && (
+            <RoleBadge kind={standing.role.kind} name={standing.role.name} />
+          )}
+          {standing?.suspendedUntil && <SuspendedBadge />}
+          {flag && (
+            <Badge
+              variant="outline"
+              className="h-4 gap-1 px-1.5 text-[10px] leading-none"
+            >
+              <FlagIcon className="size-2.5!" />
+              {flagLabel(flag.label)}
+            </Badge>
+          )}
         </div>
       )}
       <MessageContent className="gap-3 text-base">{children}</MessageContent>
     </Message>
   )
+}
+
+// A flag's badge: where it stands, or the action it ended in.
+function flagLabel(label: string) {
+  if (label in FLAG_STATUS_LABELS) {
+    return `Flagged · ${FLAG_STATUS_LABELS[label as keyof typeof FLAG_STATUS_LABELS].toLowerCase()}`
+  }
+  if (label in MODERATION_ACTIONS) {
+    return `Flagged · ${MODERATION_ACTIONS[label as keyof typeof MODERATION_ACTIONS].toLowerCase()}`
+  }
+  return "Flagged"
 }

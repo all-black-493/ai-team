@@ -36,27 +36,3 @@ export async function getChatBot(chatId: string, botId?: string) {
   }
   return member.bot
 }
-
-// The chat itself, with its bots in the order they joined: what a bot needs
-// to know about who else is in a group.
-export async function getChatWithMembers(chatId: string) {
-  const chat = await db.query.chats.findFirst({
-    where: (chats, { eq }) => eq(chats.id, chatId),
-    columns: { kind: true, name: true },
-    with: {
-      members: {
-        orderBy: (members, { asc }) => [asc(members.joinedAt)],
-        columns: {},
-        with: { bot: { columns: { id: true, name: true, job: true } } },
-      },
-    },
-  })
-  if (!chat) {
-    throw new Error(`Chat ${chatId} not found`)
-  }
-  return {
-    kind: chat.kind,
-    name: chat.name,
-    members: chat.members.map((member) => member.bot),
-  }
-}

@@ -1,17 +1,44 @@
-import { z } from "zod"
+import { getToolName, isToolUIPart, type UIMessage } from "ai"
 
-// What a user sends to create a group chat. The dialog and createGroupChat
-// both validate with it, so the limits and messages live here once.
-export const groupChatSchema = z.object({
-  name: z
-    .string()
-    .trim()
-    .min(1, "Give the group a name.")
-    .max(50, "Keep the name under 50 characters."),
-  botIds: z
-    .array(z.string().min(1))
-    .min(2, "Pick at least two bots.")
-    .refine((ids) => new Set(ids).size === ids.length, "Pick each bot once."),
-})
+import { HANDOFF_TOOL } from "@/chats/handoff"
 
-export type GroupChatInput = z.infer<typeof groupChatSchema>
+// Tools that change what the page shows of a group (trigger/group-tools.ts):
+// its bots, roles, constitution, tasks, flags or moderation. The page loads
+// the group again after an answer uses one. The shared memory isn't shown, so
+// updating it needs no reload.
+const GROUP_CHANGING_TOOLS = [
+  "add_group_member",
+  "remove_group_member",
+  "rename_group",
+  "create_role",
+  "update_role",
+  "delete_role",
+  "assign_role",
+  "set_constitution",
+  "propose_task",
+  "update_task",
+  "flag_message",
+  "answer_flag",
+  "moderate",
+]
+
+// Tools that leave another bot's turn due: a handoff's answer, a flagged
+// bot's response, or a moderator's review. The chat carries on with it.
+const FOLLOW_UP_TOOLS = [HANDOFF_TOOL, "flag_message", "answer_flag"]
+
+function usedTool(message: UIMessage, names: string[]) {
+  return message.parts.some(
+    (part) =>
+      isToolUIPart(part) &&
+      part.state === "output-available" &&
+      names.includes(getToolName(part))
+  )
+}
+
+// Whether an answer changed its group, so the page should load it again.
+export const changedGroup = (message: UIMessage) =>
+  usedTool(message, GROUP_CHANGING_TOOLS)
+
+// Whether the chat should carry on after an answer, with no new message.
+export const needsFollowUp = (message: UIMessage) =>
+  usedTool(message, FOLLOW_UP_TOOLS)
