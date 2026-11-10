@@ -9,6 +9,7 @@ import {
 } from "lucide-react"
 
 import { BotDialog } from "@/components/bot-dialog"
+import { GroupChatDialog } from "@/components/group-chat-dialog"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,12 +18,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { SidebarMenuButton, useSidebar } from "@/components/ui/sidebar"
+import type { UserBot } from "@/queries/bot"
 
-// Arena's wordmark menu: the brand opens a menu of create actions. The bot
-// dialog sits beside the menu, not inside it, so it stays open after the
+// Arena's wordmark menu: the brand opens a menu of create actions. The
+// dialogs sit beside the menu, not inside it, so they stay open after the
 // menu closes.
-export function SidebarBrandMenu() {
+export function SidebarBrandMenu({ bots }: { bots: Promise<UserBot[]> }) {
   const [botDialogOpen, setBotDialogOpen] = useState(false)
+  const [groupDialogOpen, setGroupDialogOpen] = useState(false)
   const { isMobile, state } = useSidebar()
   // Collapsed, the menu opens beside the rail instead of under the button.
   const side = !isMobile && state === "collapsed" ? "right" : "bottom"
@@ -43,8 +46,7 @@ export function SidebarBrandMenu() {
               <BotIcon />
               Create a new bot
             </DropdownMenuItem>
-            {/* Group chats aren't built yet, so this only closes the menu. */}
-            <DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setGroupDialogOpen(true)}>
               <UsersIcon />
               Create a group chat
             </DropdownMenuItem>
@@ -52,6 +54,11 @@ export function SidebarBrandMenu() {
         </DropdownMenuContent>
       </DropdownMenu>
       <BotDialog open={botDialogOpen} onOpenChange={setBotDialogOpen} />
+      <GroupChatDialog
+        bots={bots}
+        open={groupDialogOpen}
+        onOpenChange={setGroupDialogOpen}
+      />
     </>
   )
 }

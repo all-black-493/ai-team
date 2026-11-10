@@ -22,6 +22,7 @@ import {
   FolderInputIcon,
   FolderOpenIcon,
   FolderPlusIcon,
+  ForwardIcon,
   GitBranchIcon,
   GitCommitIcon,
   GitPullRequestArrowIcon,
@@ -45,6 +46,14 @@ import {
 
 import { Image } from "@/components/ai-elements/image"
 import { MessageResponse } from "@/components/ai-elements/message"
+import {
+  Terminal,
+  TerminalActions,
+  TerminalContent,
+  TerminalCopyButton,
+  TerminalHeader,
+  TerminalTitle,
+} from "@/components/ai-elements/terminal"
 import { CodeBlock, CodeBlockContent } from "@/components/ui/code-block"
 import {
   Trace,
@@ -94,8 +103,12 @@ type ToolMeta = {
   icon: LucideIcon
   verbs: [string, string, string]
   subject?: (input: unknown) => string | undefined
+  // A note beside the title, such as why.
+  description?: (input: unknown) => string | undefined
   // Shown when the row is opened, once there's output.
   detail?: (output: unknown, input: unknown) => string | undefined
+  // The detail is a terminal's output, colors and all.
+  terminal?: boolean
   // Never opened: the output is for the bot only, like view_screen's image.
   hidden?: boolean
 }
@@ -108,12 +121,14 @@ const toolMeta: Record<string, ToolMeta> = {
     verbs: ["Running", "Ran", "Failed to run"],
     subject: (input) => shorten(field(input, "command")),
     detail: commandOutput,
+    terminal: true,
   },
   read_process_logs: {
     icon: ScrollTextIcon,
     verbs: ["Reading", "Read", "Failed to read"],
     subject: () => "process logs",
     detail: commandOutput,
+    terminal: true,
   },
   stop_process: {
     icon: SquareIcon,
@@ -329,6 +344,14 @@ const toolMeta: Record<string, ToolMeta> = {
             .join("\n")
         : undefined,
   },
+  // In a group chat: the user's message goes to another bot, who answers it
+  // next.
+  handoff: {
+    icon: ForwardIcon,
+    verbs: ["Handing off to", "Handed off to", "Couldn't hand off to"],
+    subject: (input) => field(input, "to"),
+    description: (input) => shorten(field(input, "reason"), 80),
+  },
   mcp_call_tool: {
     icon: PlugIcon,
     verbs: ["Calling", "Called", "Failed to call"],
@@ -365,6 +388,7 @@ function ToolRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
     part.state !== "output-denied"
   const verb = meta.verbs[phase === "running" ? 0 : phase === "done" ? 1 : 2]
   const subject = meta.subject?.(part.input)
+  const description = meta.description?.(part.input)
   const exitCode = field(part.output, "exitCode")
   const background =
     field(part.output, "status") === "running" && phase === "done"
@@ -383,6 +407,7 @@ function ToolRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
         <meta.icon />
       </TraceIcon>
       <TraceTitle>{subject ? `${verb} ${subject}` : verb}</TraceTitle>
+      {description && <TraceDescription>{description}</TraceDescription>}
       {background && <TraceDescription>In the background</TraceDescription>}
       {exitCode !== undefined && exitCode !== "0" && (
         <TraceDescription>Exit code {exitCode}</TraceDescription>
@@ -421,7 +446,11 @@ function ToolRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
   if (!detail) return line
 
   return (
-    <ToolDetail line={line} live={phase === "running"}>
+    <ToolDetail
+      line={line}
+      live={phase === "running"}
+      terminal={meta.terminal && part.state !== "output-error"}
+    >
       {detail}
     </ToolDetail>
   )
@@ -433,10 +462,12 @@ function ToolRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
 function ToolDetail({
   line,
   live,
+  terminal,
   children,
 }: {
   line: ReactNode
   live: boolean
+  terminal?: boolean
   children: string
 }) {
   const [defaultOpen] = useState(live)
@@ -444,11 +475,25 @@ function ToolDetail({
     <TraceCollapsible defaultOpen={defaultOpen}>
       <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
       <TraceCollapsibleContent>
-        <CodeBlock size="sm">
-          <CodeBlockContent wrap className="max-h-64">
-            {children}
-          </CodeBlockContent>
-        </CodeBlock>
+        {terminal ? (
+          // Command output often carries ANSI colors, which the terminal
+          // shows rather than printing their escape codes.
+          <Terminal output={children} isStreaming={live}>
+            <TerminalHeader className="py-1.5">
+              <TerminalTitle>Output</TerminalTitle>
+              <TerminalActions>
+                <TerminalCopyButton />
+              </TerminalActions>
+            </TerminalHeader>
+            <TerminalContent className="max-h-64 p-3 text-xs" />
+          </Terminal>
+        ) : (
+          <CodeBlock size="sm">
+            <CodeBlockContent wrap className="max-h-64">
+              {children}
+            </CodeBlockContent>
+          </CodeBlock>
+        )}
       </TraceCollapsibleContent>
     </TraceCollapsible>
   )

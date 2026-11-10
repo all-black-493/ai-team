@@ -3,6 +3,8 @@ import type { Sandbox } from "@daytona/sdk"
 import { tool } from "ai"
 import { z } from "zod"
 
+import { startDesktop } from "@/lib/sandbox"
+
 type BotSandbox = {
   getBot: () => Promise<{ name: string }>
   getSandbox: () => Promise<Sandbox>
@@ -78,10 +80,7 @@ export function createBotTools({ getBot, getSandbox }: BotSandbox) {
   let desktop: Promise<void> | undefined
   async function getComputer() {
     const sandbox = await getSandbox()
-    desktop ??= (async () => {
-      const { status } = await sandbox.computerUse.getStatus()
-      if (status !== "active") await sandbox.computerUse.start()
-    })().catch((error) => {
+    desktop ??= startDesktop(sandbox).catch((error) => {
       desktop = undefined
       throw error
     })

@@ -3,13 +3,20 @@
 import { auth } from "@trigger.dev/sdk"
 import { chat, defaultStorage } from "@trigger.dev/sdk/ai"
 import { del, get } from "@vercel/blob"
+import { and, eq } from "drizzle-orm"
 import type { FileUIPart } from "ai"
 import { nanoid } from "nanoid"
 
 import { attachmentPrefix, MAX_ATTACHMENT_BYTES } from "@/chats/attachments"
 import { getChatBot } from "@/chats/bot"
+import { db } from "@/db"
+import { bots, messageRatings, type MessageRating } from "@/db/schema"
 import { getChat } from "@/chats/queries"
-import { getStartedSandbox } from "@/lib/sandbox"
+import {
+  getStartedSandbox,
+  signDesktopUrl,
+  startBotDesktop,
+} from "@/lib/sandbox"
 import type { botChat } from "@/trigger/chat"
 
 const startSession = chat.createStartSessionAction<typeof botChat>("bot-chat")
@@ -48,14 +55,19 @@ export async function loadChatTranscript({ chatId }: { chatId: string }) {
 }
 
 // Moves a file the user attached, already uploaded to the private Blob store
-// (app/api/chat-uploads), into the chat's bot's sandbox, then deletes it from
-// Blob. The message carries only a sandbox: reference: the chat stream caps
-// each record at about 1 MiB, and the bot opens the file with its own tools.
+// (app/api/chat-uploads), into the sandbox of the bot the message is for,
+// then deletes it from Blob. The message carries only a sandbox: reference:
+// the chat stream caps each record at about 1 MiB, and the bot opens the
+// file with its own tools.
 export async function attachChatFile(
   chatId: string,
+  botId: string,
   upload: { pathname: string; filename: string; mediaType: string }
 ): Promise<FileUIPart> {
   await assertOwnChat(chatId)
+  if (typeof botId !== "string" || !botId) {
+    throw new Error("No bot")
+  }
   if (
     !upload.pathname.startsWith(attachmentPrefix(chatId)) ||
     upload.pathname.includes("..")
@@ -72,7 +84,8 @@ export async function attachChatFile(
     throw new Error("File too large")
   }
 
-  const { sandboxId } = await getChatBot(chatId)
+  // Throws for a bot that isn't in this chat.
+  const { sandboxId } = await getChatBot(chatId, botId)
   if (!sandboxId) {
     throw new Error("This bot has no sandbox")
   }
@@ -93,4 +106,73 @@ export async function attachChatFile(
     filename: upload.filename,
     url: `sandbox:${path}`,
   }
+}
+
+// The longest Daytona allows, and how close to expiring a kept link is
+// replaced rather than handed out.
+const DESKTOP_URL_SECONDS = 24 * 60 * 60
+const DESKTOP_URL_MARGIN_MS = 60 * 60 * 1000
+
+// The bot's desktop, for the chat's desktop panel: starts it if needed and
+// returns a signed noVNC link. The link is kept on the bot and reused, since
+// Daytona's preview warning comes up once for each new link.
+export async function openChatDesktop(chatId: string) {
+  // Group chats have no desktop yet: only a direct chat has one bot to show.
+  if (!(await getChat(chatId))?.bot) {
+    throw new Error("Chat not found")
+  }
+  const bot = await getChatBot(chatId)
+  if (!bot.sandboxId) {
+    throw new Error("This bot has no sandbox")
+  }
+  const sandbox = await startBotDesktop(bot.sandboxId)
+  if (
+    bot.desktopUrl &&
+    bot.desktopUrlExpiresAt &&
+    bot.desktopUrlExpiresAt.getTime() > Date.now() + DESKTOP_URL_MARGIN_MS
+  ) {
+    return bot.desktopUrl
+  }
+  const url = await signDesktopUrl(sandbox, DESKTOP_URL_SECONDS)
+  await db
+    .update(bots)
+    .set({
+      desktopUrl: url,
+      desktopUrlExpiresAt: new Date(Date.now() + DESKTOP_URL_SECONDS * 1000),
+    })
+    .where(eq(bots.id, bot.id))
+  return url
+}
+
+// Thumbs up or down on one of the chat's answers; null takes it back.
+export async function rateChatMessage(
+  chatId: string,
+  messageId: string,
+  rating: MessageRating | null
+) {
+  await assertOwnChat(chatId)
+  if (typeof messageId !== "string" || !messageId) {
+    throw new Error("No message")
+  }
+  if (rating === null) {
+    await db
+      .delete(messageRatings)
+      .where(
+        and(
+          eq(messageRatings.chatId, chatId),
+          eq(messageRatings.messageId, messageId)
+        )
+      )
+    return
+  }
+  if (rating !== "up" && rating !== "down") {
+    throw new Error("Not a rating")
+  }
+  await db
+    .insert(messageRatings)
+    .values({ chatId, messageId, rating })
+    .onConflictDoUpdate({
+      target: [messageRatings.chatId, messageRatings.messageId],
+      set: { rating, ratedAt: new Date() },
+    })
 }

@@ -11,6 +11,9 @@ import {
 import { createInsertSchema } from "drizzle-zod"
 import type { z } from "zod"
 
+// Relative, not "@/": drizzle-kit loads this file without the tsconfig paths.
+import { DEFAULT_MODEL } from "../lib/models"
+
 export const bots = pgTable(
   "bots",
   {
@@ -28,8 +31,17 @@ export const bots = pgTable(
     job: text("job").notNull(),
     // How the bot should go about its job.
     instructions: text("instructions"),
+    // Which model the bot runs on: an ID from lib/models.ts. Changed from the
+    // composer of the bot's own chat.
+    model: text("model").notNull().default(DEFAULT_MODEL),
     // ID of the bot's Daytona sandbox, created and deleted with the bot.
     sandboxId: text("sandbox_id"),
+    // A signed noVNC link to the sandbox's desktop, kept and reused: Daytona
+    // shows its preview warning once per link, not once per visit.
+    desktopUrl: text("desktop_url"),
+    desktopUrlExpiresAt: timestamp("desktop_url_expires_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -56,7 +68,16 @@ export const botInsertSchema = createInsertSchema(bots, {
       .max(80, "Keep the job to a short phrase."),
   instructions: (s) =>
     s.trim().max(2000, "Keep the instructions under 2,000 characters."),
-}).omit({ id: true, userId: true, sandboxId: true, createdAt: true })
+}).omit({
+  id: true,
+  userId: true,
+  // Set on its own, from the model picker.
+  model: true,
+  sandboxId: true,
+  desktopUrl: true,
+  desktopUrlExpiresAt: true,
+  createdAt: true,
+})
 
 export type BotInsert = z.infer<typeof botInsertSchema>
 
@@ -123,3 +144,25 @@ export const chatMembersRelations = relations(chatMembers, ({ one }) => ({
   chat: one(chats, { fields: [chatMembers.chatId], references: [chats.id] }),
   bot: one(bots, { fields: [chatMembers.botId], references: [bots.id] }),
 }))
+
+export const messageRating = pgEnum("message_rating", ["up", "down"])
+
+// The user's thumbs up or down on a bot's answer. The messages themselves
+// live in the chat agent's transcript storage on Trigger.dev, so this keys
+// on the message's ID there. Gone with the chat.
+export const messageRatings = pgTable(
+  "message_ratings",
+  {
+    chatId: text("chat_id")
+      .notNull()
+      .references(() => chats.id, { onDelete: "cascade" }),
+    messageId: text("message_id").notNull(),
+    rating: messageRating("rating").notNull(),
+    ratedAt: timestamp("rated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.chatId, t.messageId] })]
+)
+
+export type MessageRating = (typeof messageRating.enumValues)[number]

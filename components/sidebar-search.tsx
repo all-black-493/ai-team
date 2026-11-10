@@ -6,6 +6,7 @@ import { formatDistanceToNowStrict } from "date-fns"
 import { SearchIcon } from "lucide-react"
 
 import { ChatAvatar } from "@/components/chat-avatar"
+import { GroupChatAvatar } from "@/components/group-chat-avatar"
 import { Button } from "@/components/ui/button"
 import {
   Command,
@@ -117,11 +118,20 @@ export function SidebarSearch({ chats }: { chats: UserChat[] }) {
                   keywords={[chat.title, chat.lastMessagePreview ?? ""]}
                   onSelect={() => openChat(chat.id)}
                 >
-                  <ChatAvatar
-                    seed={chat.bot?.avatar ?? chat.id}
-                    animated="hover"
-                    className="rounded-md"
-                  />
+                  {chat.kind === "group" ? (
+                    // Rings in the dialog's fill, so overlapping faces part
+                    // cleanly.
+                    <GroupChatAvatar
+                      members={chat.members}
+                      className="[--face-ring:var(--popover)]"
+                    />
+                  ) : (
+                    <ChatAvatar
+                      seed={chat.members[0]?.avatar ?? chat.id}
+                      animated="hover"
+                      className="rounded-md"
+                    />
+                  )}
                   <div className="grid min-w-0 flex-1 leading-tight">
                     <span className="truncate">{chat.title}</span>
                     {chat.lastMessagePreview && (

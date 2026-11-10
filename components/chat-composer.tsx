@@ -1,6 +1,13 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+  type Ref,
+} from "react"
 import {
   ArrowRightIcon,
   FileIcon,
@@ -11,6 +18,7 @@ import {
   XIcon,
 } from "lucide-react"
 
+import { SpeechInput } from "@/components/ai-elements/speech-input"
 import {
   Attachment,
   AttachmentAction,
@@ -49,9 +57,27 @@ type ChatComposerProps = {
   disabled?: boolean
   // Shows the attach menu, for files up to this size.
   attachments?: { maxBytes: number; maxLabel: string }
+  // More controls beside the attach menu, such as the token meter.
+  toolbar?: ReactNode
+  // A line above the text, such as the message being replied to.
+  header?: ReactNode
+  // The text box, to focus it from outside.
+  inputRef?: Ref<HTMLTextAreaElement>
 }
 
 type PendingFile = { id: string; file: File; preview?: string }
+
+// Dictation uses the browser's own speech recognition. Where there's none
+// (Firefox), there's no mic. The server can't tell, so it renders none and
+// the browser adds it after hydration.
+const noSubscribe = () => () => {}
+function useSpeechRecognition() {
+  return useSyncExternalStore(
+    noSubscribe,
+    () => "SpeechRecognition" in window || "webkitSpeechRecognition" in window,
+    () => false
+  )
+}
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
@@ -71,11 +97,15 @@ export function ChatComposer({
   onStop,
   disabled,
   attachments,
+  toolbar,
+  header,
+  inputRef,
 }: ChatComposerProps) {
   const [message, setMessage] = useState("")
   const [files, setFiles] = useState<PendingFile[]>([])
   const [sending, setSending] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const canDictate = useSpeechRecognition()
   const canSend =
     onSend !== undefined &&
     !sending &&
@@ -161,6 +191,11 @@ export function ChatComposer({
           has-disabled overrides keep the disabled send button from fading
           the whole composer. */}
       <InputGroup className="gap-2 rounded-[14px] border-border bg-card p-2 has-disabled:bg-card has-disabled:opacity-100 has-[[data-slot=input-group-control]:focus-visible]:border-border-medium has-[[data-slot=input-group-control]:focus-visible]:ring-0 dark:bg-card dark:has-disabled:bg-card">
+        {header && (
+          <InputGroupAddon align="block-start" className="p-1 pb-0">
+            {header}
+          </InputGroupAddon>
+        )}
         {files.length > 0 && (
           <InputGroupAddon
             align="block-start"
@@ -205,6 +240,7 @@ export function ChatComposer({
           </InputGroupAddon>
         )}
         <InputGroupTextarea
+          ref={inputRef}
           value={message}
           onChange={(event) => setMessage(event.target.value)}
           onKeyDown={(event) => {
@@ -258,29 +294,46 @@ export function ChatComposer({
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          {onStop ? (
-            <InputGroupButton
-              type="button"
-              variant="outline"
-              size="icon-sm"
-              onClick={onStop}
-              aria-label="Stop"
-              className="ml-auto rounded-[4px] bg-transparent"
-            >
-              <SquareIcon className="fill-current" />
-            </InputGroupButton>
-          ) : (
-            <InputGroupButton
-              type="submit"
-              variant="outline"
-              size="icon-sm"
-              disabled={!canSend}
-              aria-label="Send message"
-              className="ml-auto rounded-[4px] bg-transparent"
-            >
-              <ArrowRightIcon />
-            </InputGroupButton>
-          )}
+          {toolbar}
+          <div className="ml-auto flex items-center gap-1">
+            {/* What's said is added to the text, to check before sending. */}
+            {canDictate && onSend && !disabled && (
+              <SpeechInput
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Dictate"
+                className="text-muted-foreground"
+                onTranscriptionChange={(text) =>
+                  setMessage((current) =>
+                    [current.trimEnd(), text.trim()].filter(Boolean).join(" ")
+                  )
+                }
+              />
+            )}
+            {onStop ? (
+              <InputGroupButton
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                onClick={onStop}
+                aria-label="Stop"
+                className="rounded-[4px] bg-transparent"
+              >
+                <SquareIcon className="fill-current" />
+              </InputGroupButton>
+            ) : (
+              <InputGroupButton
+                type="submit"
+                variant="outline"
+                size="icon-sm"
+                disabled={!canSend}
+                aria-label="Send message"
+                className="rounded-[4px] bg-transparent"
+              >
+                <ArrowRightIcon />
+              </InputGroupButton>
+            )}
+          </div>
         </InputGroupAddon>
       </InputGroup>
     </form>

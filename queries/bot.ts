@@ -6,10 +6,9 @@ import { auth } from "@clerk/nextjs/server"
 import { db } from "@/db"
 
 // The signed-in user's chats, most recent activity first. The user ID comes
-// from the Clerk session, never from a caller. Each chat carries the bot that
-// fronts it: a direct chat's only member, or for now the first bot to join a
-// group. cache() lets the sidebar list and the search share one query per
-// request.
+// from the Clerk session, never from a caller. Each chat carries its bots in
+// the order they joined: a direct chat's one bot, or a group's members.
+// cache() lets the sidebar list and the search share one query per request.
 export const getUserChats = cache(async () => {
   const { isAuthenticated, userId } = await auth()
   if (!isAuthenticated) return []
@@ -19,6 +18,7 @@ export const getUserChats = cache(async () => {
     orderBy: (chats, { desc }) => [desc(chats.lastMessageAt)],
     columns: {
       id: true,
+      kind: true,
       name: true,
       lastMessagePreview: true,
       lastMessageAt: true,
@@ -26,18 +26,35 @@ export const getUserChats = cache(async () => {
     with: {
       members: {
         orderBy: (members, { asc }) => [asc(members.joinedAt)],
-        limit: 1,
         columns: {},
-        with: { bot: { columns: { name: true, avatar: true } } },
+        with: { bot: { columns: { id: true, name: true, avatar: true } } },
       },
     },
   })
 
   return rows.map(({ members, ...chat }) => {
-    const bot = members[0]?.bot ?? null
+    const bots = members.map((member) => member.bot)
     // Direct chats have no name of their own; they show the bot's.
-    return { ...chat, title: chat.name ?? bot?.name ?? "Untitled chat", bot }
+    return {
+      ...chat,
+      title: chat.name ?? bots[0]?.name ?? "Untitled chat",
+      members: bots,
+    }
   })
 })
 
 export type UserChat = Awaited<ReturnType<typeof getUserChats>>[number]
+
+// The signed-in user's bots, oldest first, for picking a group's members.
+export const getUserBots = cache(async () => {
+  const { isAuthenticated, userId } = await auth()
+  if (!isAuthenticated) return []
+
+  return db.query.bots.findMany({
+    where: (bots, { eq }) => eq(bots.userId, userId),
+    orderBy: (bots, { asc }) => [asc(bots.createdAt)],
+    columns: { id: true, name: true, avatar: true },
+  })
+})
+
+export type UserBot = Awaited<ReturnType<typeof getUserBots>>[number]
