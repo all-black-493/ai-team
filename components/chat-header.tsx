@@ -1,10 +1,13 @@
 import type { ReactNode } from "react"
+import Link from "next/link"
+import { LibraryIcon } from "lucide-react"
 
 import { BotDialog } from "@/components/bot-dialog"
 import { ChatAvatar } from "@/components/chat-avatar"
 import { DesktopPanelToggle } from "@/components/desktop-panel"
 import { GroupChatAvatar } from "@/components/group-chat-avatar"
 import { GroupChatDialog } from "@/components/group-chat-dialog"
+import { Button } from "@/components/ui/button"
 import {
   Item,
   ItemContent,
@@ -94,7 +97,20 @@ export function ChatHeader({
             {summary}
           </Item>
         )}
-        <div className="ml-auto flex items-center gap-1">{actions}</div>
+        <div className="ml-auto flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Group knowledge"
+            title="Group knowledge"
+            nativeButton={false}
+            render={<Link href={`/knowledge/group/${chat.id}`} />}
+          >
+            <LibraryIcon />
+          </Button>
+          {actions}
+          <DesktopPanelToggle />
+        </div>
       </header>
     )
   }

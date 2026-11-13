@@ -4,11 +4,16 @@ import { tool } from "ai"
 import { z } from "zod"
 
 import { getChatBot } from "@/chats/bot"
-import { getStartedSandbox, startDesktop } from "@/lib/sandbox"
+import {
+  getStartedSandbox,
+  startDesktop,
+  type SandboxOwner,
+} from "@/lib/sandbox"
 
 type BotSandbox = {
   getBot: () => Promise<{ name: string }>
   getSandbox: () => Promise<Sandbox>
+  owner?: SandboxOwner
 }
 
 // Long output is cut to its tail so one noisy command can't flood the model's
@@ -76,12 +81,12 @@ const gitAuth = {
 
 // Everything a bot can do in its own Daytona sandbox: commands, code, files,
 // git, code intelligence, the desktop, preview links and MCP servers.
-export function createBotTools({ getBot, getSandbox }: BotSandbox) {
+export function createBotTools({ getBot, getSandbox, owner }: BotSandbox) {
   // The desktop starts the first time a turn needs it.
   let desktop: Promise<void> | undefined
   async function getComputer() {
     const sandbox = await getSandbox()
-    desktop ??= startDesktop(sandbox).catch((error) => {
+    desktop ??= startDesktop(sandbox, owner).catch((error) => {
       desktop = undefined
       throw error
     })
@@ -733,17 +738,22 @@ export function createBotTools({ getBot, getSandbox }: BotSandbox) {
 // the first time a tool needs them. `botId` is the bot answering a turn or
 // working on an assignment; without it, the chat's first bot (a direct
 // chat's only one).
-export function createChatBotTools(chatId: string, botId: string | undefined) {
+export function createChatBotTools(
+  chatId: string,
+  botId: string | undefined,
+  owner: SandboxOwner = {}
+) {
   let bot: ReturnType<typeof getChatBot> | undefined
   let sandbox: Promise<Sandbox> | undefined
   const getBot = () => (bot ??= getChatBot(chatId, botId))
   return createBotTools({
+    owner,
     getBot,
     getSandbox: () => {
       sandbox ??= getBot()
         .then(({ sandboxId }) => {
           if (!sandboxId) throw new Error("You don't have a sandbox.")
-          return getStartedSandbox(sandboxId)
+          return getStartedSandbox(sandboxId, owner)
         })
         .catch((error) => {
           sandbox = undefined

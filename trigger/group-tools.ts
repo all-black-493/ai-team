@@ -28,6 +28,8 @@ import {
   type ModerationAction,
 } from "@/lib/governance"
 import { createCollaborationTools } from "@/trigger/collaboration"
+import type { Execution } from "@/trigger/governor"
+import type { TurnRef } from "@/trigger/memory-tools"
 import { taskRef } from "@/trigger/prompt"
 
 // Names match ignoring case and spaces.
@@ -60,11 +62,19 @@ export async function createGroupTools({
   bot,
   turn,
   history,
+  kept,
+  summary,
+  turnRef,
+  execution,
 }: {
   state: GroupState
   bot: GroupMember
   turn?: PendingTurn
   history: UIMessage[]
+  kept: UIMessage[]
+  summary?: string
+  turnRef: TurnRef
+  execution: Execution
 }): Promise<ToolSet> {
   const chatId = state.id
   // The user's bots in the group: it keeps at least two.
@@ -449,7 +459,16 @@ export async function createGroupTools({
     tools.moderate = createModerateTool(state, bot)
   }
 
-  return { ...tools, ...createCollaborationTools({ state, bot, history }) }
+  return {
+    ...tools,
+    ...createCollaborationTools({
+      state,
+      bot,
+      history: kept,
+      execution,
+      shared: { summary, turn: turnRef },
+    }),
+  }
 }
 
 // Decides a flag that has its bot's response, unless it's against this bot:

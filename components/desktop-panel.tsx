@@ -38,7 +38,10 @@ const MIN_HEIGHT = 180
 // The bot's sandbox desktop is 1024x768, so the panel starts at 4:3.
 const DEFAULT_WIDTH = 480
 
+type DesktopBot = { id: string; name: string }
+
 type DesktopPanelState = {
+  bot: DesktopBot | undefined
   open: boolean
   fullscreen: boolean
   box: Box | null
@@ -49,6 +52,7 @@ type DesktopPanelState = {
   panelHost: RefObject<HTMLDivElement | null>
   dialogHost: RefObject<HTMLDivElement | null>
   toggle: (anchor: DOMRect) => void
+  show: (botId: string) => void
   close: () => void
   setFullscreen: (fullscreen: boolean) => void
   setBox: (update: (box: Box) => Box) => void
@@ -57,6 +61,12 @@ type DesktopPanelState = {
 }
 
 const DesktopPanelContext = createContext<DesktopPanelState | null>(null)
+
+// Shows a bot's desktop from outside the panel, such as when it starts
+// using it. Null outside a chat with desktops.
+export function useDesktop() {
+  return useContext(DesktopPanelContext)
+}
 
 function useDesktopPanel() {
   const state = useContext(DesktopPanelContext)
@@ -101,11 +111,16 @@ function apply(box: Box, gesture: Gesture, dx: number, dy: number): Box {
 // panel and the full-screen dialog alike.
 export function DesktopPanelProvider({
   chatId,
+  bots,
   children,
 }: {
   chatId: string
+  // The chat's bots with a sandbox; the first is the panel's to begin with.
+  bots: DesktopBot[]
   children: ReactNode
 }) {
+  const [botId, setBotId] = useState(bots[0]?.id)
+  const bot = bots.find((other) => other.id === botId)
   const [open, setOpen] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [box, setBoxState] = useState<Box | null>(null)
@@ -116,16 +131,37 @@ export function DesktopPanelProvider({
   const dialogHost = useRef<HTMLDivElement | null>(null)
   const panelId = useId()
 
-  async function loadDesktop() {
+  async function loadDesktop(forBot = botId) {
+    if (!forBot) return
     setDesktop({ status: "loading" })
+    setFrameLoaded(false)
     try {
-      setDesktop({ status: "ready", url: await openChatDesktop(chatId) })
+      setDesktop({
+        status: "ready",
+        url: await openChatDesktop(chatId, forBot),
+      })
     } catch {
       setDesktop({ status: "error" })
     }
   }
 
+  // The first time, top right of the screen, below `top`, so it stays in
+  // reach of the header.
+  function place(top: number) {
+    if (box) return
+    const width = Math.min(DEFAULT_WIDTH, window.innerWidth - MARGIN * 2)
+    setBoxState(
+      clamp({
+        width,
+        height: (width * 3) / 4,
+        x: window.innerWidth - width - MARGIN,
+        y: top,
+      })
+    )
+  }
+
   const state: DesktopPanelState = {
+    bot,
     open,
     fullscreen,
     box,
@@ -135,27 +171,24 @@ export function DesktopPanelProvider({
     panelHost,
     dialogHost,
     toggle: (anchor) => {
-      // The first time, top right of the screen, just below the toggle so
-      // it stays in reach.
-      if (!box) {
-        const width = Math.min(DEFAULT_WIDTH, window.innerWidth - MARGIN * 2)
-        setBoxState(
-          clamp({
-            width,
-            height: (width * 3) / 4,
-            x: window.innerWidth - width - MARGIN,
-            y: anchor.bottom + 8,
-          })
-        )
-      }
+      place(anchor.bottom + 8)
       if (!open && desktop.status === "idle") loadDesktop()
       setOpen(!open)
+    },
+    show: (next) => {
+      if (!bots.some((other) => other.id === next)) return
+      place(64)
+      if (next !== botId || desktop.status === "idle") {
+        setBotId(next)
+        loadDesktop(next)
+      }
+      setOpen(true)
     },
     close: () => setOpen(false),
     setFullscreen,
     setBox: (update) => setBoxState((current) => current && update(current)),
     setGesturing,
-    loadDesktop,
+    loadDesktop: () => loadDesktop(),
   }
 
   return (
@@ -174,7 +207,9 @@ export function DesktopPanelProvider({
 }
 
 export function DesktopPanelToggle({ className }: { className?: string }) {
-  const { open, panelId, toggle } = useDesktopPanel()
+  const state = useDesktop()
+  if (!state) return null
+  const { open, panelId, toggle } = state
   return (
     <Button
       variant="ghost"
@@ -304,6 +339,7 @@ function DesktopFullscreen() {
 // either bottom corner. It doesn't block the page behind it.
 export function DesktopPanel() {
   const {
+    bot,
     open,
     box,
     desktop,
@@ -374,7 +410,8 @@ export function DesktopPanel() {
   return (
     <section
       id={panelId}
-      aria-label="Desktop"
+      data-agent-desktop={bot?.id}
+      aria-label={bot ? `${bot.name}'s desktop` : "Desktop"}
       onKeyDown={(event) => event.key === "Escape" && close()}
       className="fixed z-40 flex flex-col overflow-hidden rounded-lg border bg-card shadow-lg"
       style={{ left: box.x, top: box.y, width: box.width, height: box.height }}
@@ -385,8 +422,13 @@ export function DesktopPanel() {
         aria-label="Move the desktop panel"
         onPointerDown={(event) => startGesture(event, "move")}
         onKeyDown={(event) => keyGesture(event, "move")}
-        className="flex h-7 shrink-0 cursor-grab touch-none items-center justify-center border-b outline-none select-none focus-visible:bg-muted active:cursor-grabbing"
+        className="relative flex h-7 shrink-0 cursor-grab touch-none items-center justify-center border-b outline-none select-none focus-visible:bg-muted active:cursor-grabbing"
       >
+        {bot && (
+          <span className="absolute left-2 font-mono text-xs text-accent-foreground">
+            {bot.name}
+          </span>
+        )}
         <span className="h-1 w-8 rounded-full bg-border-medium" />
       </div>
       {/* The desktop's iframe is laid over this; until it has loaded, this

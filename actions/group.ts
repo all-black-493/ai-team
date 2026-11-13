@@ -5,6 +5,8 @@ import { and, eq, inArray, isNull, notInArray, or } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 
+import { recordEvent } from "@/chats/budget-data"
+import { deleteKnowledgeFiles } from "@/chats/knowledge-data"
 import { db } from "@/db"
 import {
   bots,
@@ -12,6 +14,7 @@ import {
   chats,
   groupChatInsertSchema,
   groupRoles,
+  knowledgeCollections,
   messageFlagInsertSchema,
   messageFlags,
   type GroupChatInsert,
@@ -207,6 +210,16 @@ export async function deleteGroupChat(chatId: string) {
   }
 
   const id = chatIdSchema.parse(chatId)
+  const shared = await db
+    .select({ id: knowledgeCollections.id })
+    .from(knowledgeCollections)
+    .where(
+      and(
+        eq(knowledgeCollections.groupChatId, id),
+        eq(knowledgeCollections.userId, userId)
+      )
+    )
+  await deleteKnowledgeFiles({ collectionIds: shared.map((one) => one.id) })
   const [chat] = await db
     .delete(chats)
     .where(
@@ -277,9 +290,8 @@ export async function flagMessage(chatId: string, input: MessageFlagInsert) {
   return flag
 }
 
-// Puts one of the user's groups on autopilot, or takes it off. On autopilot
-// its bots carry on together after each answer, without waiting for the
-// user. Returns whether it's on.
+// Puts one of the user's groups on autopilot, or takes it off, and starts
+// its run of autopilot turns afresh. Returns whether it's on.
 export async function setAutopilot(chatId: string, on: boolean) {
   const { isAuthenticated, userId } = await auth()
   if (!isAuthenticated) {
@@ -289,7 +301,7 @@ export async function setAutopilot(chatId: string, on: boolean) {
   const id = chatIdSchema.parse(chatId)
   const [chat] = await db
     .update(chats)
-    .set({ autopilot: z.boolean().parse(on) })
+    .set({ autopilot: z.boolean().parse(on), autopilotTurns: 0 })
     .where(
       and(eq(chats.id, id), eq(chats.userId, userId), eq(chats.kind, "group"))
     )
@@ -297,6 +309,14 @@ export async function setAutopilot(chatId: string, on: boolean) {
   if (!chat) {
     throw new Error("Group not found")
   }
+  await recordEvent({
+    chatId: id,
+    byUser: true,
+    category: "decided",
+    title: chat.autopilot
+      ? "Put the group on autopilot"
+      : "Took the group off autopilot",
+  })
 
   revalidatePath(`/chats/${id}`)
   return chat.autopilot

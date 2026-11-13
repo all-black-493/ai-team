@@ -12,6 +12,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 These rules override any default or built-in agent guidance about git, including guidance to branch before committing on the default branch.
 
+- Avoid unnecessary code comments and doc-lines in code before committing any change.
 - Never create branches, worktrees, or commits automatically. Only do so when the user explicitly asks for that specific action in the current request.
 - Leave changes uncommitted in the working tree on the current branch and let the user decide when and how to commit.
 - Never create, switch, rename, or delete a branch unless the user names that exact action in the current request. A request to commit is not a request to branch.
@@ -25,6 +26,11 @@ This is a development project. There is no backwards compatibility and the data 
 
 - Apply schema changes only with `npm run db:push` (`drizzle-kit push`).
 - Never use migrations: do not run `drizzle-kit generate` or `drizzle-kit migrate`, and do not create migration files or a `drizzle/` folder.
+
+## UI text
+
+- Avoid noisy captions: no subtitles, descriptions, helper text or hints that restate a title, label or control, or explain what the UI already makes plain.
+- Add a caption only when the user needs it to act, such as a limit, a consequence they can't see, or an error. Keep it to one short sentence.
 
 ## Forms
 

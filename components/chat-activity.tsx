@@ -12,6 +12,9 @@ import {
 } from "ai"
 import {
   ArrowUpRightIcon,
+  BookmarkIcon,
+  BookmarkMinusIcon,
+  BookmarkPlusIcon,
   BracesIcon,
   ClipboardListIcon,
   BrainIcon,
@@ -30,6 +33,7 @@ import {
   GitCommitIcon,
   GitPullRequestArrowIcon,
   GlobeIcon,
+  HistoryIcon,
   ImageIcon,
   KeyboardIcon,
   LandmarkIcon,
@@ -58,13 +62,28 @@ import {
   UsersIcon,
   VoteIcon,
   WrenchIcon,
+  LibraryIcon,
   type LucideIcon,
 } from "lucide-react"
 
+import {
+  Confirmation,
+  ConfirmationAction,
+  ConfirmationActions,
+  ConfirmationRequest,
+  ConfirmationTitle,
+} from "@/components/ai-elements/confirmation"
 import { Image } from "@/components/ai-elements/image"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { Shimmer } from "@/components/ai-elements/shimmer"
 import { ChatAvatar } from "@/components/chat-avatar"
+import {
+  CitationContext,
+  citationProps,
+  CitedSources,
+  sourcesOf,
+  withCitations,
+} from "@/components/knowledge-citations"
 import { Badge } from "@/components/ui/badge"
 import {
   CONSULT_TOOL,
@@ -98,8 +117,8 @@ import {
   TraceTitle,
 } from "@/components/ui/trace"
 
-type ToolPart = ToolUIPart | DynamicToolUIPart
-type Phase = "running" | "done" | "failed"
+export type ToolPart = ToolUIPart | DynamicToolUIPart
+type Phase = "running" | "done" | "failed" | "waiting" | "denied"
 type Fields = Record<string, unknown>
 
 type ActivityBot = { id: string; name: string; avatar: string }
@@ -107,21 +126,24 @@ type ActivityBot = { id: string; name: string; avatar: string }
 // What a group's activity needs from the chat: its bots, for their faces,
 // and the live answer of each bot at work in a consult or delegate call,
 // by workKey, while it streams in.
-const ActivityContext = createContext<{
+type Activity = {
   bots: ActivityBot[]
   work: (key: string) => UIMessage | undefined
-}>({ bots: [], work: () => undefined })
+  // Answers a bot's request to run a risky tool; absent where the user
+  // can't, such as inside another bot's work.
+  respond?: (part: ToolPart, approved: boolean) => void
+}
+
+const ActivityContext = createContext<Activity>({
+  bots: [],
+  work: () => undefined,
+})
 
 export function ChatActivityProvider({
-  bots,
-  work,
   children,
-}: {
-  bots: ActivityBot[]
-  work: (key: string) => UIMessage | undefined
-  children: ReactNode
-}) {
-  return <ActivityContext value={{ bots, work }}>{children}</ActivityContext>
+  ...value
+}: Activity & { children: ReactNode }) {
+  return <ActivityContext value={value}>{children}</ActivityContext>
 }
 
 // A bot by ID, or failing that by name; one that has left keeps a face.
@@ -522,6 +544,49 @@ const toolMeta: Record<string, ToolMeta> = {
         .map(([label, text]) => `${label}: ${text}`)
         .join("\n\n"),
   },
+  remember: {
+    icon: BookmarkPlusIcon,
+    verbs: ["Remembering", "Remembered", "Couldn't remember"],
+    subject: (input) => field(input, "key"),
+    detail: (_output, input) => field(input, "content"),
+  },
+  search_knowledge: {
+    icon: LibraryIcon,
+    verbs: ["Searching", "Searched", "Couldn't search"],
+    subject: (input) => `knowledge for “${shorten(field(input, "query"), 50)}”`,
+    detail: (output) => {
+      const results = (output as { results?: Fields[] } | undefined)?.results
+      return Array.isArray(results)
+        ? results
+            .map(
+              (result) => `[${result.ref}] ${result.title} · ${result.section}`
+            )
+            .join("\n") || "Nothing found"
+        : undefined
+    },
+  },
+  recall: {
+    icon: BookmarkIcon,
+    verbs: ["Recalling", "Recalled", "Couldn't recall"],
+    subject: (input) => `“${shorten(field(input, "query"), 50)}”`,
+    detail: (output) =>
+      Array.isArray(output)
+        ? output
+            .map((note: Fields) => `${note.key}: ${note.content}`)
+            .join("\n") || "Nothing found"
+        : undefined,
+  },
+  forget: {
+    icon: BookmarkMinusIcon,
+    verbs: ["Forgetting", "Forgot", "Couldn't forget"],
+    subject: (input) => field(input, "key"),
+  },
+  memory_history: {
+    icon: HistoryIcon,
+    verbs: ["Looking up", "Looked up", "Couldn't look up"],
+    subject: (input) => `the history of ${field(input, "key")}`,
+    detail: json,
+  },
   // A bot working on a delegated task says whether it's done.
   finish_task: {
     icon: ListChecksIcon,
@@ -562,14 +627,19 @@ const fallbackMeta: ToolMeta = {
 // The SDK's tool states, mapped to the line's. A call that never finished in
 // a message that has (the user stopped it) counts as failed.
 function phaseOf(part: ToolPart, streaming: boolean): Phase {
-  if (part.state === "output-error" || part.state === "output-denied") {
-    return "failed"
+  if (part.state === "output-error") return "failed"
+  if (part.state === "output-denied") return "denied"
+  if (part.state === "approval-requested") return "waiting"
+  if (part.state === "approval-responded") {
+    if (!part.approval.approved) return "denied"
+    return streaming ? "running" : "waiting"
   }
   if (part.state === "output-available" && !part.preliminary) return "done"
   return streaming ? "running" : "failed"
 }
 
 function ToolRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
+  const { respond } = use(ActivityContext)
   const name = getToolName(part)
   const meta = toolMeta[name] ?? { ...fallbackMeta, subject: () => name }
   const phase = phaseOf(part, streaming)
@@ -578,7 +648,10 @@ function ToolRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
     phase === "failed" &&
     part.state !== "output-error" &&
     part.state !== "output-denied"
-  const verb = meta.verbs[phase === "running" ? 0 : phase === "done" ? 1 : 2]
+  const verb =
+    meta.verbs[
+      phase === "running" || phase === "waiting" ? 0 : phase === "done" ? 1 : 2
+    ]
   const subject = meta.subject?.(part.input)
   const description = meta.description?.(part.input)
   const exitCode = field(part.output, "exitCode")
@@ -590,9 +663,11 @@ function ToolRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
       status={
         phase === "running"
           ? "running"
-          : phase === "failed"
+          : phase === "failed" || phase === "denied"
             ? "error"
-            : undefined
+            : phase === "waiting"
+              ? "pending"
+              : undefined
       }
     >
       <TraceIcon>
@@ -600,6 +675,10 @@ function ToolRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
       </TraceIcon>
       <TraceTitle>{subject ? `${verb} ${subject}` : verb}</TraceTitle>
       {description && <TraceDescription>{description}</TraceDescription>}
+      {phase === "waiting" && !respond && (
+        <TraceDescription>Waiting for your approval</TraceDescription>
+      )}
+      {phase === "denied" && <TraceDescription>You denied it</TraceDescription>}
       {background && <TraceDescription>In the background</TraceDescription>}
       {exitCode !== undefined && exitCode !== "0" && (
         <TraceDescription>Exit code {exitCode}</TraceDescription>
@@ -607,6 +686,42 @@ function ToolRow({ part, streaming }: { part: ToolPart; streaming: boolean }) {
       {stopped && <TraceDescription>Stopped</TraceDescription>}
     </TraceLine>
   )
+
+  if (
+    part.state === "approval-requested" &&
+    !part.approval.isAutomatic &&
+    respond
+  ) {
+    return (
+      <>
+        {line}
+        <Confirmation
+          approval={part.approval}
+          state={part.state}
+          data-agent-approval
+        >
+          <ConfirmationTitle>
+            {part.approval.requestReason ??
+              (subject ? `${verb} ${subject}` : verb)}
+            ?
+          </ConfirmationTitle>
+          <ConfirmationRequest>
+            <ConfirmationActions>
+              <ConfirmationAction
+                variant="outline"
+                onClick={() => respond(part, false)}
+              >
+                Deny
+              </ConfirmationAction>
+              <ConfirmationAction onClick={() => respond(part, true)}>
+                Approve
+              </ConfirmationAction>
+            </ConfirmationActions>
+          </ConfirmationRequest>
+        </Confirmation>
+      </>
+    )
+  }
 
   // A shared link opens in a new tab.
   const url = field(part.output, "url")
@@ -1016,6 +1131,8 @@ export function AssistantParts({
   streaming: boolean
 }) {
   const blocks: ReactNode[] = []
+  const sources = sourcesOf(message)
+  let said = ""
   let run: ReactNode[] = []
   const flush = (key: string) => {
     if (run.length === 0) return
@@ -1028,9 +1145,14 @@ export function AssistantParts({
     if (part.type === "text") {
       if (!part.text) return
       flush(key)
+      said += `${part.text}\n`
       blocks.push(
-        <MessageResponse key={key} isAnimating={part.state === "streaming"}>
-          {part.text}
+        <MessageResponse
+          key={key}
+          isAnimating={part.state === "streaming"}
+          {...(sources.size > 0 && citationProps)}
+        >
+          {withCitations(part.text, sources)}
         </MessageResponse>
       )
     } else if (part.type === "reasoning") {
@@ -1078,5 +1200,11 @@ export function AssistantParts({
     run.push(<ThinkingRow key="thinking" />)
   }
   flush("end")
-  return blocks
+  if (sources.size === 0) return blocks
+  return (
+    <CitationContext value={sources}>
+      {blocks}
+      {!streaming && <CitedSources sources={sources} text={said} />}
+    </CitationContext>
+  )
 }

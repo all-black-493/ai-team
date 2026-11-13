@@ -5,27 +5,38 @@ import {
   BotIcon,
   ChevronDownIcon,
   CirclePlusIcon,
+  GaugeIcon,
   UsersIcon,
 } from "lucide-react"
 
 import { BotDialog } from "@/components/bot-dialog"
 import { GroupChatDialog } from "@/components/group-chat-dialog"
+import { SettingsDialog } from "@/components/settings-dialog"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { SidebarMenuButton, useSidebar } from "@/components/ui/sidebar"
+import type { Limits } from "@/lib/budget"
 import type { UserBot } from "@/queries/bot"
 
 // Arena's wordmark menu: the brand opens a menu of create actions. The
 // dialogs sit beside the menu, not inside it, so they stay open after the
 // menu closes.
-export function SidebarBrandMenu({ bots }: { bots: Promise<UserBot[]> }) {
+export function SidebarBrandMenu({
+  bots,
+  settings,
+}: {
+  bots: Promise<UserBot[]>
+  settings: Promise<Limits | null>
+}) {
   const [botDialogOpen, setBotDialogOpen] = useState(false)
   const [groupDialogOpen, setGroupDialogOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const { isMobile, state } = useSidebar()
   // Collapsed, the menu opens beside the rail instead of under the button.
   const side = !isMobile && state === "collapsed" ? "right" : "bottom"
@@ -51,6 +62,13 @@ export function SidebarBrandMenu({ bots }: { bots: Promise<UserBot[]> }) {
               Create a group chat
             </DropdownMenuItem>
           </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuGroup>
+            <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+              <GaugeIcon />
+              Limits and approvals
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
       <BotDialog open={botDialogOpen} onOpenChange={setBotDialogOpen} />
@@ -58,6 +76,11 @@ export function SidebarBrandMenu({ bots }: { bots: Promise<UserBot[]> }) {
         bots={bots}
         open={groupDialogOpen}
         onOpenChange={setGroupDialogOpen}
+      />
+      <SettingsDialog
+        settings={settings}
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
       />
     </>
   )

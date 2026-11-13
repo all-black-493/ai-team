@@ -1,10 +1,17 @@
 import { notFound } from "next/navigation"
 import { auth } from "@clerk/nextjs/server"
 
-import { getChat, getChatRatings, getGroupOverview } from "@/chats/queries"
+import {
+  getChat,
+  getChatBudget,
+  getChatRatings,
+  getChatTimeline,
+  getGroupOverview,
+} from "@/chats/queries"
 import { ChatThread } from "@/components/chat-thread"
 import { DesktopPanel, DesktopPanelProvider } from "@/components/desktop-panel"
 import { getUserBots } from "@/queries/bot"
+import { getSettings } from "@/queries/settings"
 
 export default async function Page({
   params,
@@ -22,7 +29,13 @@ export default async function Page({
   // dialog reads it, so the page doesn't wait for it.
   const bots = chat.kind === "group" ? getUserBots() : undefined
   // How a group governs itself: roles, standing, flags, tasks.
-  const overview = await getGroupOverview(chat.id)
+  const [overview, budget] = await Promise.all([
+    getGroupOverview(chat.id),
+    getChatBudget(chat.id),
+  ])
+  // Read only once the timeline or the limits are opened.
+  const timeline = getChatTimeline(chat.id)
+  const settings = getSettings()
 
   const content = (
     // A fixed height, so the thread scrolls inside it and the composer stays
@@ -37,18 +50,23 @@ export default async function Page({
         bots={bots}
         overview={overview}
         ratings={ratings}
+        budget={budget}
+        timeline={timeline}
+        settings={settings}
       />
     </div>
   )
 
-  // Group chats have no desktop yet.
-  if (!chat.bot) return content
+  // Each bot with a sandbox has a desktop the panel can show; the panel
+  // floats over the header and the thread, and opens when a bot uses it.
+  // Keyed by chat, so another chat starts with its own.
+  const desktops = chat.members
+    .filter((member) => member.hasSandbox)
+    .map(({ id, name }) => ({ id, name }))
+  if (desktops.length === 0) return content
 
   return (
-    // The desktop panel floats over the header and the thread, and the
-    // header's desktop button toggles it, so the provider holds all three.
-    // Keyed by chat, so another chat gets its own bot's desktop.
-    <DesktopPanelProvider key={chat.id} chatId={chat.id}>
+    <DesktopPanelProvider key={chat.id} chatId={chat.id} bots={desktops}>
       {content}
       <DesktopPanel />
     </DesktopPanelProvider>

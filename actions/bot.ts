@@ -14,11 +14,26 @@ import {
   type BotInsert,
 } from "@/db/schema"
 import { isModelId } from "@/lib/models"
-import { createBotSandbox, deleteBotSandbox } from "@/lib/sandbox"
+import {
+  applySandboxPolicy,
+  createBotSandbox,
+  deleteBotSandbox,
+  type SandboxPolicy,
+} from "@/lib/sandbox"
+import { SANDBOX_DEFAULTS } from "@/lib/sandbox-policy"
 
 // Server Function arguments come straight from the client.
 const botIdSchema = z.string().min(1)
 const modelSchema = z.string().refine(isModelId, "Not a model bots can use")
+
+function policyOf(values: BotInsert): SandboxPolicy {
+  return {
+    networkPolicy: values.networkPolicy ?? "default",
+    allowedDomains: values.allowedDomains || null,
+    autoStopMinutes: values.autoStopMinutes ?? SANDBOX_DEFAULTS.autoStopMinutes,
+    autoArchiveDays: values.autoArchiveDays ?? SANDBOX_DEFAULTS.autoArchiveDays,
+  }
+}
 
 export async function createBot(input: BotInsert) {
   const { isAuthenticated, userId } = await auth()
@@ -32,7 +47,8 @@ export async function createBot(input: BotInsert) {
   // Every bot gets its own sandbox. It's created before the transaction so
   // the slow call doesn't hold one open, and deleted again if the bot isn't
   // saved.
-  const sandboxId = await createBotSandbox()
+  const policy = policyOf(values)
+  const sandboxId = await createBotSandbox(policy, { userId })
 
   // Every bot starts with a direct chat. One transaction, so a failure
   // leaves no bot without its chat. (node-postgres has no db.batch.)
@@ -42,6 +58,7 @@ export async function createBot(input: BotInsert) {
         .insert(bots)
         .values({
           ...values,
+          ...policy,
           instructions: values.instructions || null,
           userId,
           sandboxId,
@@ -59,7 +76,7 @@ export async function createBot(input: BotInsert) {
       return bot
     })
     .catch(async (error) => {
-      await deleteBotSandbox(sandboxId).catch((cleanupError) =>
+      await deleteBotSandbox(sandboxId, { userId }).catch((cleanupError) =>
         console.error(
           `Couldn't delete sandbox ${sandboxId} of an unsaved bot`,
           cleanupError
@@ -81,20 +98,35 @@ export async function updateBot(botId: string, input: BotInsert) {
 
   const id = botIdSchema.parse(botId)
   const values = botInsertSchema.parse(input)
+  const policy = policyOf(values)
 
   // Scoped to the signed-in user: another user's bot matches no row.
-  const [bot] = await db
-    .update(bots)
-    .set({ ...values, instructions: values.instructions || null })
-    .where(and(eq(bots.id, id), eq(bots.userId, userId)))
-    .returning()
-  if (!bot) {
+  const before = await db.query.bots.findFirst({
+    where: and(eq(bots.id, id), eq(bots.userId, userId)),
+  })
+  if (!before) {
     throw new Error("Bot not found")
   }
+  const [bot] = await db
+    .update(bots)
+    .set({ ...values, ...policy, instructions: values.instructions || null })
+    .where(and(eq(bots.id, id), eq(bots.userId, userId)))
+    .returning()
+
+  const changed = (Object.keys(policy) as (keyof SandboxPolicy)[]).some(
+    (key) => policy[key] !== before[key]
+  )
+  const { networkError } =
+    changed && bot.sandboxId
+      ? await applySandboxPolicy(bot.sandboxId, policy, {
+          userId,
+          botId: bot.id,
+        })
+      : { networkError: null }
 
   // The bot's name and face show in the sidebar and the chat header.
   revalidatePath("/", "layout")
-  return bot
+  return { bot, networkError }
 }
 
 // Switches the model a bot runs on, from the composer of its chat. Its next
@@ -158,7 +190,7 @@ export async function deleteBot(botId: string) {
     // Last, and inside the transaction: if the sandbox can't be deleted, the
     // bot isn't either, and deleting it again retries both.
     if (bot.sandboxId) {
-      await deleteBotSandbox(bot.sandboxId)
+      await deleteBotSandbox(bot.sandboxId, { userId, botId: bot.id })
     }
   })
 

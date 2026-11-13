@@ -1,4 +1,13 @@
-import { Daytona, DaytonaNotFoundError, type Sandbox } from "@daytona/sdk"
+import {
+  Daytona,
+  DaytonaNotFoundError,
+  type CreateSandboxFromSnapshotParams,
+  type Sandbox,
+} from "@daytona/sdk"
+
+import { db } from "@/db"
+import { sandboxEvents } from "@/db/schema"
+import { domainsOf, type NetworkPolicy } from "@/lib/sandbox-policy"
 
 // Server code only, though there's no "server-only" guard: the Trigger.dev
 // agent imports this too, and that package throws outside React's server
@@ -14,47 +23,155 @@ function daytona() {
   return new Daytona({ apiUrl: process.env.DAYTONA_API_URL })
 }
 
-// Bots' sandboxes run as Daytona's default user, whose home this is.
-const SANDBOX_HOME = "/home/daytona"
+export type SandboxOwner = { userId?: string | null; botId?: string | null }
 
-// A bot's memory: a Markdown file in its sandbox that it reads and writes to
-// remember things from one chat to the next, its private chat and its groups
-// alike (see the instructions in trigger/chat.ts).
-const MEMORY_FILE = "MEMORY.md"
-export const MEMORY_PATH = `${SANDBOX_HOME}/${MEMORY_FILE}`
-
-// Each bot gets its own Daytona sandbox, created with the bot and its blank
-// memory file. Returns the ID to keep on the bot row. If the file can't be
-// made, the sandbox is deleted again and the bot isn't created.
-export async function createBotSandbox() {
-  const client = daytona()
-  const sandbox = await client.create()
-  try {
-    const { exitCode, result } = await sandbox.process.executeCommand(
-      `touch ${MEMORY_FILE}`,
-      SANDBOX_HOME
-    )
-    if (exitCode !== 0) {
-      throw new Error(`Couldn't create ${MEMORY_PATH}: ${result}`)
-    }
-  } catch (error) {
-    await client
-      .delete(sandbox)
-      .catch((cleanupError) =>
-        console.error(
-          `Couldn't delete sandbox ${sandbox.id} after a failed setup`,
-          cleanupError
-        )
-      )
-    throw error
-  }
-  return sandbox.id
+export type SandboxPolicy = {
+  networkPolicy: NetworkPolicy
+  allowedDomains: string | null
+  autoStopMinutes: number
+  autoArchiveDays: number
 }
 
-export async function deleteBotSandbox(sandboxId: string) {
+// Times a Daytona call and records how it went.
+export async function tracked<T>(
+  sandboxId: string,
+  action: string,
+  owner: SandboxOwner,
+  run: () => Promise<T>,
+  cold = false
+) {
+  const started = Date.now()
+  try {
+    const result = await run()
+    await record(sandboxId, action, owner, true, started, cold)
+    return result
+  } catch (error) {
+    await record(sandboxId, action, owner, false, started, cold, error)
+    throw error
+  }
+}
+
+export async function recordSandboxCall(
+  sandboxId: string,
+  action: string,
+  owner: SandboxOwner,
+  call: { ok: boolean; started: number; cold?: boolean; error?: unknown }
+) {
+  await record(
+    sandboxId,
+    action,
+    owner,
+    call.ok,
+    call.started,
+    call.cold ?? false,
+    call.error
+  )
+}
+
+async function record(
+  sandboxId: string,
+  action: string,
+  owner: SandboxOwner,
+  ok: boolean,
+  started: number,
+  cold: boolean,
+  error?: unknown
+) {
+  await db
+    .insert(sandboxEvents)
+    .values({
+      sandboxId,
+      action,
+      userId: owner.userId ?? null,
+      botId: owner.botId ?? null,
+      ok,
+      cold,
+      durationMs: Date.now() - started,
+      error: error instanceof Error ? error.message.slice(0, 500) : null,
+    })
+    .catch((failure) =>
+      console.error("Couldn't record a sandbox event", failure)
+    )
+}
+
+function networkParams(policy: SandboxPolicy) {
+  if (policy.networkPolicy === "blocked") return { networkBlockAll: true }
+  if (policy.networkPolicy === "domains") {
+    return { domainAllowList: domainsOf(policy.allowedDomains).join(",") }
+  }
+  return {}
+}
+
+const lifecycleParams = (policy: SandboxPolicy) => ({
+  autoStopInterval: policy.autoStopMinutes,
+  autoArchiveInterval: policy.autoArchiveDays * 24 * 60,
+})
+
+// Each bot gets its own Daytona sandbox, created with the bot under its
+// network and idle policy. Returns the ID to keep on the bot row.
+export async function createBotSandbox(
+  policy: SandboxPolicy,
+  owner: SandboxOwner
+) {
+  const started = Date.now()
+  const params: CreateSandboxFromSnapshotParams = {
+    ...networkParams(policy),
+    ...lifecycleParams(policy),
+  }
+  try {
+    const sandbox = await daytona().create(params)
+    await record(sandbox.id, "create", owner, true, started, true)
+    return sandbox.id
+  } catch (error) {
+    await record("none", "create", owner, false, started, true, error)
+    throw error
+  }
+}
+
+// Applies a changed policy to a bot's sandbox. Lifecycle settings always
+// apply; Daytona refuses network settings below its Tier 3, and that
+// refusal comes back as `networkError` rather than failing the rest.
+export async function applySandboxPolicy(
+  sandboxId: string,
+  policy: SandboxPolicy,
+  owner: SandboxOwner
+) {
+  const sandbox = await tracked(sandboxId, "get", owner, () =>
+    daytona().get(sandboxId)
+  )
+  const lifecycle = lifecycleParams(policy)
+  await tracked(sandboxId, "set-autostop", owner, () =>
+    sandbox.setAutostopInterval(lifecycle.autoStopInterval)
+  )
+  await tracked(sandboxId, "set-autoarchive", owner, () =>
+    sandbox.setAutoArchiveInterval(lifecycle.autoArchiveInterval)
+  )
+  const network =
+    policy.networkPolicy === "default"
+      ? { networkBlockAll: false }
+      : networkParams(policy)
+  try {
+    await tracked(sandboxId, "set-network", owner, () =>
+      sandbox.updateNetworkSettings(network)
+    )
+    return { networkError: null }
+  } catch (error) {
+    return {
+      networkError:
+        error instanceof Error ? error.message : "Daytona refused it",
+    }
+  }
+}
+
+export async function deleteBotSandbox(
+  sandboxId: string,
+  owner: SandboxOwner = {}
+) {
   const client = daytona()
   try {
-    await client.delete(await client.get(sandboxId))
+    await tracked(sandboxId, "delete", owner, async () =>
+      client.delete(await client.get(sandboxId))
+    )
   } catch (error) {
     // Already gone, which is what we wanted.
     if (error instanceof DaytonaNotFoundError) return
@@ -64,29 +181,53 @@ export async function deleteBotSandbox(sandboxId: string) {
 
 // A bot's sandbox, ready to use. An idle sandbox stops itself after a while,
 // and a stopped or archived one is started again here.
-export async function getStartedSandbox(sandboxId: string) {
-  const sandbox = await daytona().get(sandboxId)
+export async function getStartedSandbox(
+  sandboxId: string,
+  owner: SandboxOwner = {}
+) {
+  const sandbox = await tracked(sandboxId, "get", owner, () =>
+    daytona().get(sandboxId)
+  )
   if (sandbox.state === "starting") {
-    await sandbox.waitUntilStarted()
+    await tracked(
+      sandboxId,
+      "start",
+      owner,
+      () => sandbox.waitUntilStarted(),
+      true
+    )
   } else if (sandbox.state !== "started") {
-    await sandbox.start()
+    await tracked(sandboxId, "start", owner, () => sandbox.start(), true)
   }
   return sandbox
 }
 
 // The desktop (Xvfb, xfce, x11vnc and noVNC) starts when first needed.
-export async function startDesktop(sandbox: Sandbox) {
-  const { status } = await sandbox.computerUse.getStatus()
-  if (status !== "active") await sandbox.computerUse.start()
+export async function startDesktop(sandbox: Sandbox, owner: SandboxOwner = {}) {
+  const { status } = await tracked(sandbox.id, "desktop-status", owner, () =>
+    sandbox.computerUse.getStatus()
+  )
+  if (status !== "active") {
+    await tracked(
+      sandbox.id,
+      "desktop-start",
+      owner,
+      () => sandbox.computerUse.start(),
+      true
+    )
+  }
 }
 
 // noVNC, served by websockify on port 6080 in Daytona's default snapshot.
 const NOVNC_PORT = 6080
 
 // A bot's sandbox with its desktop running.
-export async function startBotDesktop(sandboxId: string) {
-  const sandbox = await getStartedSandbox(sandboxId)
-  await startDesktop(sandbox)
+export async function startBotDesktop(
+  sandboxId: string,
+  owner: SandboxOwner = {}
+) {
+  const sandbox = await getStartedSandbox(sandboxId, owner)
+  await startDesktop(sandbox, owner)
   return sandbox
 }
 

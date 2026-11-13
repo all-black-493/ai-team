@@ -133,6 +133,3 @@ export const MAX_PARALLEL_BOTS = 6
 
 // Every ballot can abstain. It counts as cast, not for an option.
 export const ABSTAIN = "Abstain"
-
-// The most turns autopilot runs in a row before it pauses for the user.
-export const MAX_AUTOPILOT_TURNS = 24

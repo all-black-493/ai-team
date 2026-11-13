@@ -13,14 +13,25 @@ import {
 } from "@trigger.dev/sdk/chat/react"
 import { upload } from "@vercel/blob/client"
 import {
+  getToolName,
+  isToolUIPart,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
   readUIMessageStream,
   type FileUIPart,
   type UIMessage,
   type UIMessageChunk,
 } from "ai"
-import { FileIcon, FlagIcon, PlaneIcon, ReplyIcon, XIcon } from "lucide-react"
+import {
+  FileIcon,
+  FlagIcon,
+  PersonStandingIcon,
+  PlaneIcon,
+  ReplyIcon,
+  XIcon,
+} from "lucide-react"
 
 import { setBotModel } from "@/actions/bot"
+import { recordApproval } from "@/actions/approval"
 import { setAutopilot } from "@/actions/group"
 import {
   loadChatTranscript,
@@ -40,13 +51,22 @@ import { Message, MessageContent } from "@/components/ai-elements/message"
 import { Shimmer } from "@/components/ai-elements/shimmer"
 import { Suggestion, Suggestions } from "@/components/ai-elements/suggestion"
 import {
+  AgentStage,
+  type AgentTarget,
+  type StageActor,
+} from "@/components/agent-stage"
+import { BudgetNotice } from "@/components/budget-notice"
+import {
   AssistantParts,
   ChatActivityProvider,
   hasVisibleParts,
+  type ToolPart,
 } from "@/components/chat-activity"
 import { ChatAvatar } from "@/components/chat-avatar"
 import { ChatComposer, type ComposerMessage } from "@/components/chat-composer"
 import { ChatHeader } from "@/components/chat-header"
+import { ChatTimeline } from "@/components/chat-timeline"
+import { useDesktop } from "@/components/desktop-panel"
 import {
   FlagMessageDialog,
   type FlaggedMessage,
@@ -74,18 +94,23 @@ import {
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_LABEL,
 } from "@/chats/attachments"
+import { awaitsApproval } from "@/chats/approvals"
+import { PARALLEL_TOOLS, workKey } from "@/chats/collaboration"
 import { changedGroup, needsFollowUp } from "@/chats/group"
 import { handoffOf } from "@/chats/handoff"
-import type { ChatWithBot, GroupOverview } from "@/chats/queries"
-import type { MessageRating } from "@/db/schema"
+import type { ChatBudget, ChatWithBot, GroupOverview } from "@/chats/queries"
+import type { ChatEvent, MessageRating } from "@/db/schema"
+import { DEFAULT_LIMITS, type Limits } from "@/lib/budget"
 import type { UserBot } from "@/queries/bot"
 import {
   FLAG_STATUS_LABELS,
-  MAX_AUTOPILOT_TURNS,
+  MAX_PARALLEL_BOTS,
   MODERATION_ACTIONS,
   type RoleKind,
 } from "@/lib/governance"
+import { actionForTool, type AgentAction } from "@/lib/pixel-agent"
 import { cn } from "@/lib/utils"
+import { usePixelAgents } from "@/hooks/use-pixel-agents"
 import type { BotMessageMetadata, BotUIMessage, botChat } from "@/trigger/chat"
 
 export type ThreadBot = {
@@ -107,6 +132,9 @@ type ChatThreadProps = {
   overview?: GroupOverview | null
   // The user's saved ratings of the chat's answers, by message ID.
   ratings: Record<string, MessageRating>
+  budget: ChatBudget | null
+  timeline: Promise<ChatEvent[]>
+  settings: Promise<Limits | null>
 }
 
 // A message's actions show on hover or keyboard focus, and always on touch
@@ -127,7 +155,7 @@ function textOf(message: UIMessage) {
 
 // The most turns the chat runs on its own in a row, such as a flag's
 // response and review: a guard against bots handing a message round. On
-// autopilot, it's MAX_AUTOPILOT_TURNS.
+// autopilot, it's the user's limit.
 const MAX_AUTOMATIC_TURNS = 4
 
 // Passes a turn's stream through, handing the work of bots it sets going
@@ -141,6 +169,103 @@ function forwardWork(onData: (part: { type: string; data?: unknown }) => void) {
       controller.enqueue(chunk)
     },
   })
+}
+
+const DESKTOP_TOOLS = new Set([
+  "view_screen",
+  "show_screen",
+  "mouse_click",
+  "mouse_move",
+  "mouse_drag",
+  "mouse_scroll",
+  "keyboard_type",
+  "keyboard_press",
+])
+
+// The latest bot using its desktop in an answer coming in: the answering
+// bot, or one it set to work.
+function desktopUseIn(
+  message: BotUIMessage | undefined,
+  work: (key: string) => UIMessage | undefined
+) {
+  if (message?.role !== "assistant") return undefined
+  let botId: string | undefined
+  const look = (parts: UIMessage["parts"], author: string | undefined) => {
+    for (const part of parts) {
+      if (!isToolUIPart(part)) continue
+      const name = getToolName(part)
+      if (DESKTOP_TOOLS.has(name) && author) botId = author
+      if (!PARALLEL_TOOLS.includes(name)) continue
+      for (let index = 0; index < MAX_PARALLEL_BOTS; index++) {
+        const live = work(workKey(part.toolCallId, index))
+        const liveAuthor = (live?.metadata as BotMessageMetadata | undefined)
+          ?.botId
+        if (live) look(live.parts, liveAuthor)
+      }
+    }
+  }
+  look(message.parts, message.metadata?.botId)
+  return botId && `${message.id}:${botId}`
+}
+
+type Activity = { action: AgentAction; target: AgentTarget }
+
+// What an answer's bot is doing now, from its latest part.
+function activityOf(message: UIMessage): Activity {
+  const part = message.parts.findLast(
+    (each) => each.type !== "step-start" && !each.type.startsWith("data-")
+  )
+  if (!part) return { action: "think", target: "message" }
+  if (isToolUIPart(part)) {
+    const name = getToolName(part)
+    if (part.state === "approval-requested") {
+      return { action: "alert", target: "approval" }
+    }
+    if (
+      part.state === "input-streaming" ||
+      part.state === "input-available" ||
+      (part.state === "output-available" && part.preliminary)
+    ) {
+      return {
+        action: actionForTool(name),
+        target: DESKTOP_TOOLS.has(name) ? "desktop" : "message",
+      }
+    }
+    return { action: "think", target: "message" }
+  }
+  return {
+    action: part.type === "text" ? "talk" : "think",
+    target: "message",
+  }
+}
+
+// Every bot busy in an answer: its writer, and any bots it set to work in a
+// consult or delegate call, who work where they stand.
+function stageActivity(
+  message: BotUIMessage,
+  work: (key: string) => UIMessage | undefined
+) {
+  const activity = new Map<string, Activity>()
+  for (const part of message.parts) {
+    if (!isToolUIPart(part) || !PARALLEL_TOOLS.includes(getToolName(part))) {
+      continue
+    }
+    if (part.state === "output-available" && !part.preliminary) continue
+    if (part.state === "output-error") continue
+    for (let index = 0; index < MAX_PARALLEL_BOTS; index++) {
+      const live = work(workKey(part.toolCallId, index))
+      const botId = (live?.metadata as BotMessageMetadata | undefined)?.botId
+      if (live && botId) {
+        activity.set(botId, {
+          action: activityOf(live).action,
+          target: "floor",
+        })
+      }
+    }
+  }
+  const author = message.metadata?.botId
+  if (author) activity.set(author, activityOf(message))
+  return activity
 }
 
 // Where a message is in the page, for a reply to jump back to it.
@@ -166,7 +291,8 @@ const suggestions = {
 
 // The chat's header and conversation. The header is here, not on the page,
 // so it can offer the conversation as a download.
-export function ChatThread({ chat, bots, overview, ratings }: ChatThreadProps) {
+export function ChatThread(props: ChatThreadProps) {
+  const { chat, bots, overview } = props
   const chatId = chat.id
   // Talks to the bot-chat agent on Trigger.dev. Each action checks that the
   // chat belongs to the signed-in user.
@@ -206,10 +332,7 @@ export function ChatThread({ chat, bots, overview, ratings }: ChatThreadProps) {
 
   return (
     <ChatMessages
-      chat={chat}
-      bots={bots}
-      overview={overview}
-      ratings={ratings}
+      {...props}
       transport={transport}
       initialMessages={transcript.messages as BotUIMessage[]}
     />
@@ -224,6 +347,9 @@ function ChatMessages({
   bots,
   overview,
   ratings: initialRatings,
+  budget,
+  timeline,
+  settings,
   transport,
   initialMessages,
 }: ChatThreadProps & {
@@ -245,19 +371,23 @@ function ChatMessages({
     error,
     regenerate,
     stop,
+    clearError,
+    addToolApprovalResponse,
   } = useChat<BotUIMessage>({
     id: chatId,
     messages: initialMessages,
     transport,
     onData: subAgents.onData,
+    // Once the user answers every approval a bot asked for, it carries on.
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     // An answer that leaves another bot's turn due, such as a handoff or a
     // flag, is followed at once by that turn, and on autopilot every answer
     // is followed by the next. Only answers that finish here: a stopped or
     // broken one doesn't carry on.
     onFinish: ({ message, isAbort, isDisconnect, isError }) => {
-      // A bot changed the group: load it again, for the header, the badges,
-      // the bot picker and the sidebar.
-      if (changedGroup(message)) router.refresh()
+      // For spend, the timeline, and anything a bot changed in the group.
+      router.refresh()
+      if (awaitsApproval(message)) return
       if (
         (needsFollowUp(message) || autopilotRef.current) &&
         !isAbort &&
@@ -281,8 +411,11 @@ function ChatMessages({
 
   // On autopilot, the group's bots carry on after every answer, a bot the
   // agent's director picks at a time, until it picks nobody (`idle`) or
-  // they've run MAX_AUTOPILOT_TURNS in a row (`limit`). The ref is what the
-  // running loop reads, so switching off stops it after the turn in hand.
+  // they've run the user's limit of turns in a row (`limit`), which the agent
+  // also enforces. The ref is what the running loop reads, so switching off
+  // stops it after the turn in hand.
+  const maxAutopilotTurns =
+    budget?.maxAutopilotTurns ?? DEFAULT_LIMITS.maxAutopilotTurns
   const [autopilot, setAutopilotOn] = useState(overview?.autopilot ?? false)
   const autopilotRef = useRef(autopilot)
   const [autopilotStop, setAutopilotStop] = useState<"idle" | "limit" | null>(
@@ -292,6 +425,8 @@ function ChatMessages({
   // turn in hand ends.
   const queuedRef = useRef<(() => void) | null>(null)
   const [queued, setQueued] = useState<string | null>(null)
+  const autopilotPaused =
+    autopilot && (overview?.autopilotTurns ?? 0) >= maxAutopilotTurns
 
   const last = messages.at(-1)
   // The answer coming in, once it has started: an automatic turn's is the
@@ -300,6 +435,20 @@ function ChatMessages({
     answering || (auto && last?.id !== auto.fromId) ? last : undefined
   const thinking =
     busy && !(incoming?.role === "assistant" && hasVisibleParts(incoming))
+
+  // A bot that starts using its desktop opens it in the panel, once per
+  // answer, so closing it stays closed until the next.
+  const desktop = useDesktop()
+  const desktopUse = busy ? desktopUseIn(incoming, subAgents.get) : undefined
+  const shownDesktops = useRef(new Set<string>())
+  const showDesktop = useEffectEvent((use: string) => {
+    if (!desktop || shownDesktops.current.has(use)) return
+    shownDesktops.current.add(use)
+    desktop.show(use.slice(use.indexOf(":") + 1))
+  })
+  useEffect(() => {
+    if (desktopUse) showDesktop(desktopUse)
+  }, [desktopUse])
 
   // Each bot's role and standing in a group, and the latest flag on each
   // message, with what was decided.
@@ -464,10 +613,26 @@ function ChatMessages({
   // agent, so it's sent again: with its own ID, so the agent doesn't keep it
   // twice if it did. Regenerating instead would answer the message before it.
   // A broken answer is asked again of its bot.
-  function retry() {
+  async function retry() {
     const latest = messages.at(-1)
     if (!latest) return
     if (latest.role === "user") {
+      // It may have been answered after all, its stream cut off on the
+      // way back: then the answer shows instead of a second one.
+      const saved = await loadChatTranscript({ chatId }).catch(() => null)
+      const at = saved?.messages.findIndex(
+        (message) => message.id === latest.id
+      )
+      if (
+        saved &&
+        at !== undefined &&
+        at >= 0 &&
+        at < saved.messages.length - 1
+      ) {
+        clearError()
+        setMessages(saved.messages as BotUIMessage[])
+        return
+      }
       void sendMessage(
         {
           parts: latest.parts,
@@ -502,9 +667,11 @@ function ChatMessages({
     let stopped: "idle" | "limit" | null = null
     try {
       for (let turn = 0; ; turn++) {
+        // One past the autopilot limit: the agent refuses that turn itself
+        // and records the pause.
         if (
           turn >=
-          (autopilotRef.current ? MAX_AUTOPILOT_TURNS : MAX_AUTOMATIC_TURNS)
+          (autopilotRef.current ? maxAutopilotTurns + 1 : MAX_AUTOMATIC_TURNS)
         ) {
           if (autopilotRef.current) stopped = "limit"
           break
@@ -539,6 +706,7 @@ function ChatMessages({
         setAuto((current) => current && { ...current, fromId: answer.id })
         setAskedBotId(null)
         if (changedGroup(answer)) router.refresh()
+        if (awaitsApproval(answer)) break
         if (queuedRef.current) break
         if (!needsFollowUp(answer) && !autopilotRef.current) break
       }
@@ -592,6 +760,31 @@ function ChatMessages({
     resumeAutopilot()
   }, [])
 
+  // The user's answer to a bot's request to run a risky tool. The bot
+  // carries on once every request in its answer is answered.
+  function respond(part: ToolPart, approved: boolean) {
+    if (part.state !== "approval-requested") return
+    void addToolApprovalResponse({
+      id: part.approval.id,
+      approved,
+      reason: approved ? undefined : "The user denied it.",
+    })
+    const asker = messages.find((message) =>
+      message.parts.some(
+        (other) => "toolCallId" in other && other.toolCallId === part.toolCallId
+      )
+    )?.metadata?.botId
+    const botId = asker ?? members[0]?.id
+    if (botId) {
+      recordApproval({
+        chatId,
+        botId,
+        action: part.approval.requestReason ?? getToolName(part),
+        approved,
+      }).catch(() => {})
+    }
+  }
+
   // While turns run on their own, a message waits for the one in hand.
   function queue(message: ComposerMessage) {
     queuedRef.current = () => void send(message)
@@ -622,6 +815,23 @@ function ChatMessages({
 
   const replyAuthor = replyMessage && authorOf(replyMessage)
 
+  const [agentsOn, setAgentsOn] = usePixelAgents()
+  const waitingApproval = !busy && awaitsApproval(last)
+  const activity: Map<string, Activity> =
+    busy && incoming?.role === "assistant"
+      ? stageActivity(incoming, subAgents.get)
+      : busy && askedBot
+        ? new Map([[askedBot.id, { action: "think", target: "message" }]])
+        : waitingApproval && last?.role === "assistant"
+          ? stageActivity(last, subAgents.get)
+          : new Map()
+  const actors: StageActor[] = members.map((member) => ({
+    id: member.id,
+    name: member.name,
+    seed: member.avatar,
+    ...(activity.get(member.id) ?? { action: "idle", target: "floor" }),
+  }))
+
   // What the due turn is waiting for, in words.
   const dueText = !due
     ? undefined
@@ -638,30 +848,50 @@ function ChatMessages({
         bots={bots}
         overview={overview}
         actions={
-          messages.length > 0 && (
-            <ConversationDownload
-              messages={messages}
-              filename={`${chat.title.replaceAll(/[^\w -]+/g, "").trim() || "Chat"}.md`}
-              formatMessage={asMarkdown}
+          <>
+            <Button
               variant="ghost"
               size="icon"
-              aria-label="Download the conversation"
-              className="static rounded-lg dark:bg-transparent"
-            />
-          )
+              aria-pressed={agentsOn}
+              aria-label={
+                agentsOn ? "Hide the characters" : "Show the characters"
+              }
+              title={agentsOn ? "Hide the characters" : "Show the characters"}
+              onClick={() => setAgentsOn(!agentsOn)}
+            >
+              <PersonStandingIcon />
+            </Button>
+            <ChatTimeline events={timeline} bots={members} budget={budget} />
+            {messages.length > 0 && (
+              <ConversationDownload
+                messages={messages}
+                filename={`${chat.title.replaceAll(/[^\w -]+/g, "").trim() || "Chat"}.md`}
+                formatMessage={asMarkdown}
+                variant="ghost"
+                size="icon"
+                aria-label="Download the conversation"
+                className="static rounded-lg dark:bg-transparent"
+              />
+            )}
+          </>
         }
       />
-      <ChatActivityProvider bots={members} work={subAgents.get}>
+      <ChatActivityProvider
+        bots={members}
+        work={subAgents.get}
+        respond={respond}
+      >
         <Conversation className="min-h-0">
-          <ConversationContent className="mx-auto w-full max-w-[800px] gap-6 px-4 py-6">
+          <ConversationContent
+            className={cn(
+              "mx-auto w-full max-w-[800px] gap-6 px-4 py-6",
+              agentsOn && "pb-20"
+            )}
+          >
             {messages.length === 0 && !busy && (
               <EmptyChat
                 title={chat.title}
-                description={
-                  group
-                    ? "Pick who answers below, or turn on autopilot and let the bots work it out together."
-                    : (chat.bot?.job ?? "")
-                }
+                description={group ? "" : (chat.bot?.job ?? "")}
                 face={
                   group ? (
                     <GroupChatAvatar members={members} className="size-12" />
@@ -717,6 +947,7 @@ function ChatMessages({
                 <BotMessage
                   key={message.id}
                   id={anchorOf(message.id)}
+                  agentId={author?.id}
                   bot={author}
                   standing={author && standing.get(author.id)}
                   flag={
@@ -765,7 +996,7 @@ function ChatMessages({
               )
             })}
             {thinking && (
-              <BotMessage bot={askedBot}>
+              <BotMessage bot={askedBot} agentId={askedBot?.id}>
                 <Shimmer>Thinking…</Shimmer>
               </BotMessage>
             )}
@@ -784,20 +1015,32 @@ function ChatMessages({
                 </Button>
               </div>
             )}
-            {autopilot && autopilotStop && !busy && !error && !autoFailed && (
-              <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                {autopilotStop === "limit"
-                  ? `Autopilot paused after ${MAX_AUTOPILOT_TURNS} turns in a row.`
-                  : "On autopilot. The bots have nothing to do right now."}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => carryOn(last?.id)}
-                >
-                  {autopilotStop === "limit" ? "Keep going" : "Check again"}
-                </Button>
-              </div>
-            )}
+            {autopilot &&
+              (autopilotStop || autopilotPaused) &&
+              !budget?.exhausted &&
+              !awaitsApproval(last) &&
+              !busy &&
+              !error &&
+              !autoFailed && (
+                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                  {autopilotPaused || autopilotStop === "limit"
+                    ? `Autopilot paused after ${maxAutopilotTurns} turns in a row.`
+                    : "On autopilot. The bots have nothing to do right now."}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      autopilotPaused || autopilotStop === "limit"
+                        ? switchAutopilot(true)
+                        : carryOn(last?.id)
+                    }
+                  >
+                    {autopilotPaused || autopilotStop === "limit"
+                      ? "Keep going"
+                      : "Check again"}
+                  </Button>
+                </div>
+              )}
             {error && (
               <div
                 role="alert"
@@ -813,15 +1056,37 @@ function ChatMessages({
           <ConversationScrollButton />
         </Conversation>
       </ChatActivityProvider>
+      {agentsOn && (
+        <AgentStage
+          actors={actors}
+          busy={busy || waitingApproval}
+          failed={Boolean(error) || autoFailed}
+        />
+      )}
+      {budget && (budget.exhausted || budget.warning) && (
+        <div className="mx-auto w-full max-w-[800px] px-4 pb-2">
+          <BudgetNotice budget={budget} settings={settings} />
+        </div>
+      )}
       {/* While the bot answers, send turns into stop. */}
       <DockedComposer
         inputRef={inputRef}
-        placeholder={placeholderFor(bot)}
+        placeholder={
+          budget?.exhausted ? "Spend limit reached" : placeholderFor(bot)
+        }
         disabled={!bot}
         attachments={attachments}
         // While turns run on their own, a message waits for the one in
         // hand; while the user's own is answered, there's only stop.
-        onSend={!bot ? undefined : !busy ? send : auto ? queue : undefined}
+        onSend={
+          !bot || budget?.exhausted
+            ? undefined
+            : !busy
+              ? send
+              : auto
+                ? queue
+                : undefined
+        }
         onStop={busy ? stopAnswer : undefined}
         header={
           queued ? (
@@ -871,11 +1136,6 @@ function ChatMessages({
                 pressed={autopilot}
                 onPressedChange={switchAutopilot}
                 aria-label="Autopilot"
-                title={
-                  autopilot
-                    ? "On autopilot: the bots carry on without you"
-                    : "Let the bots carry on without you"
-                }
               >
                 <PlaneIcon data-icon="inline-start" />
                 <span className="hidden sm:inline">Autopilot</span>
@@ -1032,7 +1292,7 @@ function UserMessage({
 
 function DockedComposer(props: React.ComponentProps<typeof ChatComposer>) {
   return (
-    <div className="mx-auto w-full max-w-[800px] px-4 pb-4">
+    <div data-agent-floor className="mx-auto w-full max-w-[800px] px-4 pb-4">
       <ChatComposer {...props} />
     </div>
   )
@@ -1045,12 +1305,14 @@ function DockedComposer(props: React.ComponentProps<typeof ChatComposer>) {
 function BotMessage({
   bot,
   id,
+  agentId,
   standing,
   flag,
   children,
 }: {
   bot: ThreadBot | undefined
   id?: string
+  agentId?: string
   standing?: {
     role: { kind: RoleKind; name: string }
     suspendedUntil: Date | null
@@ -1059,7 +1321,7 @@ function BotMessage({
   children: React.ReactNode
 }) {
   return (
-    <Message from="assistant" id={id}>
+    <Message from="assistant" id={id} data-agent-message={agentId}>
       {bot && (
         <div className="flex flex-wrap items-center gap-2">
           <ChatAvatar seed={bot.avatar} className="size-5 rounded-sm" />

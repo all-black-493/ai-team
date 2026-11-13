@@ -1,11 +1,13 @@
 "use server"
 
+import { auth as clerkAuth } from "@clerk/nextjs/server"
 import { auth } from "@trigger.dev/sdk"
 import { chat, defaultStorage } from "@trigger.dev/sdk/ai"
 import { del, get } from "@vercel/blob"
 import { and, eq } from "drizzle-orm"
 import type { FileUIPart } from "ai"
 import { nanoid } from "nanoid"
+import { z } from "zod"
 
 import { attachmentPrefix, MAX_ATTACHMENT_BYTES } from "@/chats/attachments"
 import { getChatBot } from "@/chats/bot"
@@ -113,19 +115,27 @@ export async function attachChatFile(
 const DESKTOP_URL_SECONDS = 24 * 60 * 60
 const DESKTOP_URL_MARGIN_MS = 60 * 60 * 1000
 
-// The bot's desktop, for the chat's desktop panel: starts it if needed and
-// returns a signed noVNC link. The link is kept on the bot and reused, since
-// Daytona's preview warning comes up once for each new link.
-export async function openChatDesktop(chatId: string) {
-  // Group chats have no desktop yet: only a direct chat has one bot to show.
-  if (!(await getChat(chatId))?.bot) {
+// One of the chat's bots' desktop, for the chat's desktop panel: starts it
+// if needed and returns a signed noVNC link. The link is kept on the bot and
+// reused, since Daytona's preview warning comes up once for each new link.
+export async function openChatDesktop(chatId: string, botId?: string) {
+  const chat = await getChat(chatId)
+  const wanted = z.string().min(1).optional().parse(botId)
+  const member = wanted
+    ? chat?.members.find((member) => member.id === wanted)
+    : chat?.members[0]
+  if (!member) {
     throw new Error("Chat not found")
   }
-  const bot = await getChatBot(chatId)
+  const bot = await getChatBot(chatId, member.id)
   if (!bot.sandboxId) {
     throw new Error("This bot has no sandbox")
   }
-  const sandbox = await startBotDesktop(bot.sandboxId)
+  const { userId } = await clerkAuth()
+  const sandbox = await startBotDesktop(bot.sandboxId, {
+    userId,
+    botId: bot.id,
+  })
   if (
     bot.desktopUrl &&
     bot.desktopUrlExpiresAt &&

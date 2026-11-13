@@ -55,6 +55,7 @@ export async function loadGroupState(chatId: string) {
       sharedMemoryUpdatedAt: true,
       sharedMemoryUpdatedBy: true,
       autopilot: true,
+      autopilotTurns: true,
     },
     with: {
       roles: { orderBy: (roles, { asc }) => [asc(roles.createdAt)] },
@@ -163,6 +164,7 @@ export async function loadGroupState(chatId: string) {
     sharedMemoryUpdatedAt: chat.sharedMemoryUpdatedAt,
     sharedMemoryUpdatedBy: chat.sharedMemoryUpdatedBy,
     autopilot: chat.autopilot,
+    autopilotTurns: chat.autopilotTurns,
     roles: chat.roles.map((role) => ({
       ...role,
       permissions: permissionsOf(role),
@@ -202,6 +204,7 @@ export type PendingTurn =
   | { kind: "flag-response"; botId: string; flag: MessageFlag }
   | { kind: "flag-review"; botId: string; flag: MessageFlag }
   | { kind: "autopilot"; botId: string; reason: string }
+  | { kind: "approval"; botId: string }
 
 const isMember = (state: GroupState, botId: string) =>
   state.members.some((member) => member.id === botId)

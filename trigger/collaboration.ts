@@ -13,11 +13,13 @@ import { eq } from "drizzle-orm"
 import { z } from "zod"
 
 import { getChatBot } from "@/chats/bot"
+import { recordEvent } from "@/chats/budget-data"
 import {
   CONSULT_TOOL,
   DELEGATE_TOOL,
   FINISH_TASK_TOOL,
   outcomeOf,
+  tally,
   VOTE_TOOL,
   workKey,
   type ParallelOutput,
@@ -31,6 +33,12 @@ import {
   type GroupMember,
   type GroupState,
 } from "@/chats/governance-data"
+import {
+  accessibleCollections,
+  describeIssues,
+  describePassages,
+  SourceRegistry,
+} from "@/chats/knowledge-data"
 import { db } from "@/db"
 import { groupTasks, groupVotes } from "@/db/schema"
 import { ABSTAIN, MAX_PARALLEL_BOTS } from "@/lib/governance"
@@ -40,9 +48,16 @@ import {
   transcriptOf,
   type BotMessageMetadata,
 } from "@/trigger/context"
+import { approvalPolicy, governTools, type Execution } from "@/trigger/governor"
 import { languageModel, modelProviderOptions } from "@/trigger/models"
 import { botPrompt, groupInstructions, taskRef } from "@/trigger/prompt"
+import { createKnowledgeTools, knowledgeFor } from "@/trigger/knowledge-tools"
+import { createMemoryTools, type TurnRef } from "@/trigger/memory-tools"
 import { createChatBotTools } from "@/trigger/tools"
+
+// What a turn's bots at work share: the summary of the conversation before
+// what they're shown, and the turn their memory lookups count towards.
+export type Shared = { summary?: string; turn: TurnRef }
 
 // How a group's bots work together at once: a bot sets others to work on
 // something in parallel (consult), an admin gives them tasks (delegate), or
@@ -53,8 +68,8 @@ import { createChatBotTools } from "@/trigger/tools"
 // network, so running them side by side here costs no extra machine, and
 // starts at once.
 
-// How many steps a bot at work can take: room for real work in its sandbox.
-const WORK_STEPS = 30
+// A ceiling on steps; the user's tool-call limit usually stops it first.
+const WORK_STEPS = 200
 // A bot's report as the calling bot reads it, and as a task keeps it.
 const REPORT_CHARS = 4000
 const TASK_RESULT_CHARS = 2000
@@ -140,6 +155,8 @@ async function work({
   history,
   assignment,
   key,
+  execution,
+  shared,
   abortSignal,
 }: {
   state: GroupState
@@ -147,21 +164,46 @@ async function work({
   history: UIMessage[]
   assignment: Assignment
   key: string
+  execution: Execution
+  shared: Shared
   abortSignal?: AbortSignal
 }): Promise<WorkResult> {
   const { bot, request, taskId } = assignment
   const base = { botId: bot.id, bot: bot.name, request, taskId }
+  let own = execution.child(bot.id)
   let failure: unknown
   let finished: { done: boolean; summary: string } | undefined
   try {
     const record = await getChatBot(state.id, bot.id)
+    own = execution.child(bot.id, record.sandboxId)
+    const owner = { userId: state.userId, botId: bot.id }
     const sandboxTools: ToolSet =
       record.sandboxId && can(bot, "use_sandbox")
-        ? createChatBotTools(state.id, bot.id)
+        ? createChatBotTools(state.id, bot.id, owner)
         : {}
-    const tools: ToolSet = { ...sandboxTools }
+    const given: ToolSet = {
+      ...sandboxTools,
+      ...createMemoryTools({
+        botId: bot.id,
+        chatId: state.id,
+        turn: shared.turn,
+        readOnly: true,
+      }),
+    }
+    const knowledge = {
+      userId: state.userId,
+      botId: bot.id,
+      chatId: state.id,
+      collections: await accessibleCollections(bot.id, state.id).catch(
+        () => []
+      ),
+      sources: new SourceRegistry(),
+      turn: {},
+    }
+    Object.assign(given, createKnowledgeTools(knowledge))
+    const found = await knowledgeFor(knowledge, request)
     if (taskId) {
-      tools[FINISH_TASK_TOOL] = tool({
+      given[FINISH_TASK_TOOL] = tool({
         description:
           "Say whether your delegated task is done, once you've worked on it, with a one-line summary for the group's task list. Then give your report.",
         inputSchema: z.object({
@@ -174,6 +216,7 @@ async function work({
         },
       })
     }
+    const tools = governTools(given, own)
     const hasSandbox = Object.keys(sandboxTools).length > 0
     const names = new Map(state.members.map((other) => [other.id, other.name]))
     const prompt = await botPrompt.resolve({
@@ -189,7 +232,15 @@ async function work({
       delegatedTask: Boolean(taskId),
       sandbox: hasSandbox,
       noSandbox: !record.sandboxId,
-      sandboxInGroup: hasSandbox,
+      knowledgeAccess:
+        knowledge.collections
+          .map((collection) => `"${collection.name}"`)
+          .join(", ") || undefined,
+      citeByName: knowledge.collections.length > 0,
+      knowledge:
+        describePassages(found.passages, knowledge.sources) || undefined,
+      knowledgeIssues:
+        describeIssues(found.issues, knowledge.sources) || undefined,
     })
 
     const result = streamText({
@@ -201,11 +252,16 @@ async function work({
         names,
         bot.id,
         tools,
-        `${caller.name} set you to work on your assignment. Do it now.`
+        `${caller.name} set you to work on your assignment. Do it now.`,
+        shared.summary
       ),
       tools,
-      abortSignal,
-      stopWhen: isStepCount(WORK_STEPS),
+      abortSignal: own.signal(abortSignal),
+      stopWhen: [isStepCount(WORK_STEPS), own.stopWhen],
+      toolApproval: approvalPolicy(own.limits, "refuse"),
+      onStepFinish: async ({ usage }) => {
+        await own.record("work", record.model, usage)
+      },
       onError: ({ error }) => {
         failure = error
       },
@@ -220,22 +276,32 @@ async function work({
       }),
       { toolCallId: key }
     )
-    const report = reportOf(message) || (message ? textOf(message) : "")
+    const said = reportOf(message) || (message ? textOf(message) : "")
     const status = abortSignal?.aborted
       ? "stopped"
       : failure !== undefined
         ? "failed"
         : "done"
+    const report = [
+      finished?.summary,
+      said || (finished ? "" : "It gave no report."),
+      own.stopTitle() && `(${own.stopTitle()}.)`,
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+    await recordEvent({
+      chatId: state.id,
+      botId: bot.id,
+      category: "did",
+      title: `${taskId ? "Worked on" : "Answered"} “${clip(request, 80)}” for ${caller.name}`,
+      detail: own.stopTitle() ?? null,
+      cost: own.ownSpent,
+    })
     return {
       ...base,
       status,
       taskDone: taskId ? (finished?.done ?? false) : undefined,
-      report: clip(
-        finished && report
-          ? `${finished.summary}\n\n${report}`
-          : report || finished?.summary || "It gave no report.",
-        REPORT_CHARS
-      ),
+      report: clip(report, REPORT_CHARS),
       message: message && keptWork(message),
     }
   } catch (error) {
@@ -258,6 +324,8 @@ async function workTogether({
   history,
   assignments,
   toolCallId,
+  execution,
+  shared,
   abortSignal,
 }: {
   state: GroupState
@@ -265,6 +333,8 @@ async function workTogether({
   history: UIMessage[]
   assignments: Assignment[]
   toolCallId: string
+  execution: Execution
+  shared: Shared
   abortSignal?: AbortSignal
 }): Promise<ParallelOutput> {
   const results = await Promise.all(
@@ -282,12 +352,16 @@ async function workTogether({
         history,
         assignment: { ...assignment, brief: assignment.brief + meanwhile },
         key: workKey(toolCallId, index),
+        execution,
+        shared,
         abortSignal,
       })
     })
   )
   if (JSON.stringify(results).length > KEPT_ALL) {
-    return { results: results.map(({ message: _, ...result }) => result) }
+    return {
+      results: results.map((result) => ({ ...result, message: undefined })),
+    }
   }
   return { results }
 }
@@ -359,6 +433,7 @@ async function castBallot({
   options,
   context,
   transcript,
+  execution,
   abortSignal,
 }: {
   state: GroupState
@@ -368,12 +443,13 @@ async function castBallot({
   options: string[]
   context?: string
   transcript: string
+  execution: Execution
   abortSignal?: AbortSignal
 }): Promise<VoteBallot> {
   const ballot = { botId: voter.id, bot: voter.name }
   try {
     const record = await getChatBot(state.id, voter.id)
-    const { output } = await generateText({
+    const { output, usage } = await generateText({
       model: languageModel(record.model),
       providerOptions: modelProviderOptions(record.model),
       output: Output.object({
@@ -403,6 +479,7 @@ async function castBallot({
         .join("\n\n"),
       abortSignal,
     })
+    await execution.record("ballot", record.model, usage, voter.id)
     return { ...ballot, choice: output.choice, reason: output.reason.trim() }
   } catch {
     return { ...ballot, choice: ABSTAIN, reason: "Couldn't cast a ballot." }
@@ -415,13 +492,25 @@ export function createCollaborationTools({
   state,
   bot,
   history,
+  execution,
+  shared,
 }: {
   state: GroupState
   bot: GroupMember
   history: UIMessage[]
+  execution: Execution
+  shared: Shared
 }): ToolSet {
   const chatId = state.id
   const tools: ToolSet = {}
+  const most = Math.min(MAX_PARALLEL_BOTS, execution.limits.maxParallelBots)
+  const withinLimit = (count: number) => {
+    if (count > most) {
+      throw new Error(
+        `The user allows at most ${most} bots at once. Set fewer to work.`
+      )
+    }
+  }
   const others = othersOf(state, bot)
   const names = others.map((other) => `${other.name} (${other.job})`)
 
@@ -445,7 +534,7 @@ export function createCollaborationTools({
 
   if (can(bot, "consult") && others.length > 0) {
     tools[CONSULT_TOOL] = tool({
-      description: `Set other bots in this group to work at the same time, and get their reports back before you reply: to split a job between them, gather their views, or have them check something. Each works on its own, in parallel, with its own tools and the conversation so far, and can't see the others' work. Put everything you want done at once in one call, up to ${MAX_PARALLEL_BOTS} bots, each once. Bots you can ask: ${names.join(", ")}.`,
+      description: `Set other bots in this group to work at the same time, and get their reports back before you reply: to split a job between them, gather their views, or have them check something. Each works on its own, in parallel, with its own tools and the conversation so far, and can't see the others' work. Put everything you want done at once in one call, up to ${most} bots, each once. Bots you can ask: ${names.join(", ")}.`,
       inputSchema: z.object({
         asks: z
           .array(
@@ -465,6 +554,7 @@ export function createCollaborationTools({
           .max(MAX_PARALLEL_BOTS),
       }),
       execute: async ({ asks }, { toolCallId, abortSignal }) => {
+        withinLimit(asks.length)
         const now = await loadGroupState(chatId)
         const picked = pick(
           now,
@@ -475,6 +565,8 @@ export function createCollaborationTools({
           caller: bot,
           history,
           toolCallId,
+          execution,
+          shared,
           abortSignal,
           assignments: asks.map((ask, index) => ({
             bot: picked[index],
@@ -492,7 +584,7 @@ export function createCollaborationTools({
 
   if (can(bot, "delegate_tasks") && others.length > 0) {
     tools[DELEGATE_TOOL] = tool({
-      description: `Delegate tasks to other bots in this group. Each task goes on the group's task list as theirs, and they start on them at once, in parallel, with their own tools, then report back to you: the task is marked done if its bot says so. Up to ${MAX_PARALLEL_BOTS} bots, one task each. Bots you can delegate to: ${names.join(", ")}.`,
+      description: `Delegate tasks to other bots in this group. Each task goes on the group's task list as theirs, and they start on them at once, in parallel, with their own tools, then report back to you: the task is marked done if its bot says so. Up to ${most} bots, one task each. Bots you can delegate to: ${names.join(", ")}.`,
       inputSchema: z.object({
         tasks: z
           .array(
@@ -511,6 +603,7 @@ export function createCollaborationTools({
           .max(MAX_PARALLEL_BOTS),
       }),
       execute: async ({ tasks }, { toolCallId, abortSignal }) => {
+        withinLimit(tasks.length)
         const now = await loadGroupState(chatId)
         const picked = pick(
           now,
@@ -534,6 +627,8 @@ export function createCollaborationTools({
           caller: bot,
           history,
           toolCallId,
+          execution,
+          shared,
           abortSignal,
           assignments: tasks.map((task, index) => ({
             bot: picked[index],
@@ -625,6 +720,7 @@ export function createCollaborationTools({
               options: choices,
               context,
               transcript,
+              execution,
               abortSignal,
             }),
           ])
@@ -649,6 +745,16 @@ export function createCollaborationTools({
             reason,
           })),
           outcome: result.outcome,
+        })
+        await recordEvent({
+          chatId,
+          botId: bot.id,
+          category: "decided",
+          title: `Vote on “${question}”: ${result.outcome ?? "tied"}`,
+          detail: tally(choices, ballots)
+            .filter(({ votes }) => votes > 0)
+            .map(({ option, votes }) => `${option} ${votes}`)
+            .join(", "),
         })
         yield result
       },

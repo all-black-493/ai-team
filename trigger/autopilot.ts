@@ -1,4 +1,9 @@
-import { generateText, Output, type UIMessage } from "ai"
+import {
+  generateText,
+  Output,
+  type LanguageModelUsage,
+  type UIMessage,
+} from "ai"
 import { z } from "zod"
 
 import type { GroupState, PendingTurn } from "@/chats/governance-data"
@@ -25,20 +30,12 @@ Pick nobody when there's nothing useful left for the bots to do without the user
 
 Give your reason in one short sentence to the bot you pick, saying what it should do now, such as "Quill asked you to review the draft." For nobody, say why the group can stop.`
 
-// What the director picked for each chat's next turn, from the action that
-// asked for it (onAction) to the turn's tools and run. Kept here, not
-// worked out again: each pick is a model call, and could come out
-// differently.
-export const autopilotTurns = new Map<
-  string,
-  Extract<PendingTurn, { kind: "autopilot" }>
->()
-
 // The bot to speak next on autopilot, and why, or nothing when the group
 // can stop. Suspended bots sit it out.
 export async function chooseSpeaker(
   state: GroupState,
-  history: UIMessage[]
+  history: UIMessage[],
+  onUsage: (model: string, usage: LanguageModelUsage) => Promise<unknown>
 ): Promise<Extract<PendingTurn, { kind: "autopilot" }> | undefined> {
   const candidates = state.members.filter((member) => !member.suspendedUntil)
   if (candidates.length === 0) return undefined
@@ -58,7 +55,7 @@ export async function chooseSpeaker(
     )
     .join("\n")
 
-  const { output } = await generateText({
+  const { output, usage } = await generateText({
     model: languageModel(DIRECTOR_MODEL),
     providerOptions: modelProviderOptions(DIRECTOR_MODEL),
     output: Output.object({
@@ -80,6 +77,7 @@ export async function chooseSpeaker(
     ].join("\n\n"),
   })
 
+  await onUsage(DIRECTOR_MODEL, usage)
   const next = candidates.find((member) => member.name === output.next)
   if (!next) return undefined
   return { kind: "autopilot", botId: next.id, reason: output.reason.trim() }

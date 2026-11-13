@@ -2,7 +2,13 @@ import Link from "next/link"
 import { Suspense } from "react"
 import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/nextjs"
 import { formatDistanceToNowStrict } from "date-fns"
-import { BotIcon, LogInIcon, UserPlusIcon } from "lucide-react"
+import {
+  BotIcon,
+  ChartColumnIcon,
+  LibraryIcon,
+  LogInIcon,
+  UserPlusIcon,
+} from "lucide-react"
 
 import { ChatAvatar } from "@/components/chat-avatar"
 import { GroupChatAvatar } from "@/components/group-chat-avatar"
@@ -24,6 +30,7 @@ import {
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 import { getUserBots, getUserChats } from "@/queries/bot"
+import { getSettings } from "@/queries/settings"
 
 // The DESIGN.md icon rail: 49px collapsed, 240px open, canvas fill with a
 // hairline edge.
@@ -31,6 +38,7 @@ export function AppSidebar() {
   // Not awaited: only the group chat dialog reads it, so the header doesn't
   // wait for it.
   const bots = getUserBots()
+  const settings = getSettings()
 
   return (
     <Sidebar collapsible="icon">
@@ -39,7 +47,7 @@ export function AppSidebar() {
         <div className="flex items-center group-data-[collapsible=icon]:flex-col-reverse group-data-[collapsible=icon]:gap-2">
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarBrandMenu bots={bots} />
+              <SidebarBrandMenu bots={bots} settings={settings} />
             </SidebarMenuItem>
           </SidebarMenu>
           {/* size-8, like every SidebarMenuButton in the collapsed rail. */}
@@ -56,6 +64,24 @@ export function AppSidebar() {
               <SidebarMenuButton render={<Link href="/" />} tooltip="Bots">
                 <BotIcon />
                 <span>Bots</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                render={<Link href="/knowledge" />}
+                tooltip="Knowledge"
+              >
+                <LibraryIcon />
+                <span>Knowledge</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                render={<Link href="/metrics" />}
+                tooltip="Metrics"
+              >
+                <ChartColumnIcon />
+                <span>Metrics</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>

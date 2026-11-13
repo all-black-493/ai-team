@@ -39,6 +39,9 @@ const ANSWER_QUOTE = 4000
 // And of each report another bot got back from bots working for it.
 const REPORT_QUOTE = 600
 
+export const summaryNote = (summary: string) =>
+  `[Summary of the conversation before this point]\n\n${summary}`
+
 export function textOf(message: UIMessage) {
   return message.parts
     .map((part) => (part.type === "text" ? part.text : ""))
@@ -165,7 +168,8 @@ export async function groupContext(
   names: Map<string, string>,
   botId: string,
   tools: ToolSet,
-  cue?: string
+  cue?: string,
+  summary?: string
 ): Promise<ModelMessage[]> {
   const nameOf = (id: string | undefined) =>
     (id && names.get(id)) ?? "a bot that has left"
@@ -192,6 +196,7 @@ export async function groupContext(
       ignoreIncompleteToolCalls: true,
     })
 
+  if (summary) addUser([{ type: "text", text: summaryNote(summary) }])
   for (const [index, message] of history.entries()) {
     if (message.role === "user") {
       const next = history[index + 1]
